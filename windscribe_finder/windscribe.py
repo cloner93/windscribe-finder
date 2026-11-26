@@ -103,11 +103,37 @@ _PORT_TOKEN_RE = re.compile(r"\b\d{1,5}\b")
 _BULLET_PREFIX_RE = re.compile(r"^(?:[-*•]+|\d+[.)])\s+")
 
 
+def _strip_cli_noise(text: str) -> str:
+    """Remove harmless Windscribe CLI logger warnings (e.g. spdlog rotating_file_sink)."""
+    cleaned_lines = [
+        line
+        for line in text.splitlines()
+        if not line.lstrip().lower().startswith("spdlog ")
+    ]
+    return "\n".join(cleaned_lines)
+
+
+def _extract_connect_location(location: str) -> str:
+    """Convert a display location label into a valid `windscribe-cli connect` target.
+
+    `windscribe-cli locations` prints `Region - City - Nickname` (or `Best Location - <Nick>`),
+    whereas `windscribe-cli connect` accepts a country code, region, city, nickname, or `best`.
+    """
+    stripped = location.strip()
+    if stripped.lower().startswith("best location"):
+        return "best"
+    if " - " in stripped:
+        parts = [part.strip() for part in stripped.split(" - ") if part.strip()]
+        if parts:
+            return parts[-1]
+    return stripped
+
+
 def parse_amneziawg_presets(output: str) -> list[str]:
     """Parse available AmneziaWG preset names from `windscribe-cli amneziawg`."""
     presets: list[str] = []
     seen: set[str] = set()
-    for raw_line in output.splitlines():
+    for raw_line in _strip_cli_noise(output).splitlines():
         stripped = raw_line.strip()
         if not stripped or _SEPARATOR_RE.match(stripped):
             continue
@@ -136,7 +162,7 @@ def parse_ports(output: str) -> list[str]:
     """Parse valid TCP/UDP port numbers (1-65535) from `windscribe-cli ports <protocol>`."""
     ports: list[str] = []
     seen: set[str] = set()
-    for match in _PORT_TOKEN_RE.findall(output):
+    for match in _PORT_TOKEN_RE.findall(_strip_cli_noise(output)):
         port_num = int(match)
         if 1 <= port_num <= 65535:
             port_str = str(port_num)
@@ -175,7 +201,7 @@ def parse_locations(output: str) -> list[str]:
     region_column_index: int | None = None
     city_column_index: int | None = None
 
-    for raw_line in output.splitlines():
+    for raw_line in _strip_cli_noise(output).splitlines():
         stripped = raw_line.strip()
         if not stripped or _SEPARATOR_RE.match(stripped):
             continue
@@ -229,7 +255,7 @@ def parse_locations(output: str) -> list[str]:
 
 
 def _combined_output(result: CommandResult) -> str:
-    return f"{result.stdout}\n{result.stderr}".strip()
+    return _strip_cli_noise(f"{result.stdout}\n{result.stderr}").strip()
 
 
 def _check_not_ready(result: CommandResult) -> None:
@@ -286,9 +312,11 @@ class WindscribeClient:
 
         Returns (connected, error_message, timed_out).
         """
-        args = [self._cli_path, "connect", location, protocol]
+        target_location = _extract_connect_location(location)
+        proto_spec = protocol.strip()
         if port is not None and str(port).strip():
-            args.append(str(port).strip())
+            proto_spec = f"{proto_spec}:{str(port).strip()}"
+        args = [self._cli_path, "connect", target_location, proto_spec]
 
         result = self._runner.run(args, timeout=timeout)
         if result.timed_out:

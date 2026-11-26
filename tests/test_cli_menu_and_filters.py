@@ -54,8 +54,11 @@ class FakeVpnEnv:
             return CommandResult(returncode=0, stdout="Disconnected", stderr="")
         if cmd == "connect":
             location = args[2]
-            protocol = args[3]
-            port = args[4] if len(args) > 4 else None
+            proto_spec = args[3]
+            if ":" in proto_spec:
+                protocol, port = proto_spec.split(":", 1)
+            else:
+                protocol, port = proto_spec, None
             key = (location, protocol, port)
             self.connect_calls.append(key)
             if self._interrupt_on_connect == key:
@@ -140,8 +143,8 @@ class TestRegionAndProtocolFiltering(unittest.TestCase):
                     "stealth": "8443\n",
                 },
                 outcomes={
-                    ("Germany - Frankfurt", "stealth", "8443"): [90.0, 110.0],
-                    ("Germany - Berlin", "stealth", "8443"): [70.0, 90.0],
+                    ("Frankfurt", "stealth", "8443"): [90.0, 110.0],
+                    ("Berlin", "stealth", "8443"): [70.0, 90.0],
                     ("Netherlands", "stealth", "8443"): [50.0, 50.0],
                     ("Switzerland", "stealth", "8443"): [40.0, 40.0],
                 },
@@ -179,8 +182,8 @@ class TestRegionAndProtocolFiltering(unittest.TestCase):
             self.assertEqual(
                 env.connect_calls,
                 [
-                    ("Germany - Frankfurt", "stealth", "8443"),
-                    ("Germany - Berlin", "stealth", "8443"),
+                    ("Frankfurt", "stealth", "8443"),
+                    ("Berlin", "stealth", "8443"),
                 ],
             )
             output = out.getvalue()
@@ -302,9 +305,9 @@ class TestRegionAndProtocolFiltering(unittest.TestCase):
                     locations_output=locations_output,
                     ports_by_protocol={"stealth": "8443\n"},
                     outcomes={
-                        ("Germany - Frankfurt", "stealth", "8443"): [80.0, 90.0],
-                        ("Germany - Berlin", "stealth", "8443"): [60.0, 70.0],
-                        ("Netherlands - Amsterdam", "stealth", "8443"): [40.0, 40.0],
+                        ("Frankfurt", "stealth", "8443"): [80.0, 90.0],
+                        ("Berlin", "stealth", "8443"): [60.0, 70.0],
+                        ("Amsterdam", "stealth", "8443"): [40.0, 40.0],
                     },
                 )
                 out = io.StringIO()
@@ -335,8 +338,8 @@ class TestRegionAndProtocolFiltering(unittest.TestCase):
                 self.assertEqual(
                     env.connect_calls,
                     [
-                        ("Germany - Frankfurt", "stealth", "8443"),
-                        ("Germany - Berlin", "stealth", "8443"),
+                        ("Frankfurt", "stealth", "8443"),
+                        ("Berlin", "stealth", "8443"),
                     ],
                 )
                 self.assertNotIn("Netherlands", out.getvalue())

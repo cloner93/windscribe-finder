@@ -181,8 +181,11 @@ class FakeVpnEnvironment:
             return CommandResult(returncode=0, stdout="Disconnected", stderr="")
         if cmd == "connect":
             location = args[2]
-            protocol = args[3]
-            port = args[4] if len(args) > 4 else None
+            proto_spec = args[3]
+            if ":" in proto_spec:
+                protocol, port = proto_spec.split(":", 1)
+            else:
+                protocol, port = proto_spec, None
             key = (location, protocol, port)
             self.connect_calls.append(key)
             outcome = self.outcomes.get(key, "timeout")
@@ -451,7 +454,9 @@ class TestTwoPhaseSmartScanner(unittest.TestCase):
 
             def run(self, args: list[str], *, timeout: float | None = None) -> CommandResult:
                 if args[1] == "connect":
-                    key = (args[2], args[3], args[4] if len(args) > 4 else None)
+                    proto_spec = args[3]
+                    protocol, port = proto_spec.split(":", 1) if ":" in proto_spec else (proto_spec, None)
+                    key = (args[2], protocol, port)
                     self._connect_counts[key] = self._connect_counts.get(key, 0) + 1
                     if self._connect_counts[key] >= 2 and key in self._fail_second_connect_for:
                         self.command_calls.append(list(args))
@@ -500,7 +505,9 @@ class TestTwoPhaseSmartScanner(unittest.TestCase):
 
             def run(self, args: list[str], *, timeout: float | None = None) -> CommandResult:
                 if args[1] == "connect":
-                    key = (args[2], args[3], args[4] if len(args) > 4 else None)
+                    proto_spec = args[3]
+                    protocol, port = proto_spec.split(":", 1) if ":" in proto_spec else (proto_spec, None)
+                    key = (args[2], protocol, port)
                     self._connect_counts[key] = self._connect_counts.get(key, 0) + 1
                     if self._connect_counts[key] >= 2:
                         self.command_calls.append(list(args))
@@ -569,8 +576,8 @@ class TestTwoPhaseSmartScanner(unittest.TestCase):
         self.assertEqual(
             env.connect_calls,
             [
-                ("Germany - Frankfurt", "wireguard", "443"),
-                ("Netherlands - Amsterdam", "wireguard", "443"),
+                ("Frankfurt", "wireguard", "443"),
+                ("Amsterdam", "wireguard", "443"),
             ],
         )
 
@@ -579,8 +586,8 @@ class TestTwoPhaseSmartScanner(unittest.TestCase):
             locations_output="Germany - Frankfurt\nGermany - Berlin\n",
             ports_by_protocol={"wireguard": "443\n"},
             outcomes={
-                ("Germany - Frankfurt", "wireguard", "443"): "timeout",
-                ("Germany - Berlin", "wireguard", "443"): "timeout",
+                ("Frankfurt", "wireguard", "443"): "timeout",
+                ("Berlin", "wireguard", "443"): "timeout",
             },
         )
         client = WindscribeClient(env, "windscribe-cli.exe")
@@ -599,10 +606,68 @@ class TestTwoPhaseSmartScanner(unittest.TestCase):
         self.assertEqual(
             env.connect_calls,
             [
-                ("Germany - Frankfurt", "wireguard", "443"),
-                ("Germany - Berlin", "wireguard", "443"),
+                ("Frankfurt", "wireguard", "443"),
+                ("Berlin", "wireguard", "443"),
             ],
         )
+
+    def test_strips_spdlog_noise_from_ports_and_connect_and_extracts_nickname_or_best(self) -> None:
+        env = FakeVpnEnvironment(
+            locations_output="\n".join(
+                [
+                    "spdlog init failed: rotating_file_sink: failed renaming cli.log to cli.1.log: permission denied",
+                    "Best Location - Alphorn (10 Gbps)",
+                    "US Central - Atlanta - Magic City (10 Gbps)",
+                ]
+            ),
+            ports_by_protocol={
+                "wireguard": (
+                    "spdlog init failed: rotating_file_sink: failed renaming cli.log to cli.1.log: permission denied\n"
+                    "443, 80, 53\n"
+                ),
+            },
+            outcomes={
+                ("best", "wireguard", "443"): "timeout",
+                ("Magic City", "wireguard", "443"): [65.0, 75.0],
+            },
+        )
+        original_run = env.run
+
+        def run_with_spdlog_stderr(args: list[str], *, timeout: float | None = None) -> CommandResult:
+            res = original_run(args, timeout=timeout)
+            if args[1] == "connect" and res.returncode == 0:
+                return CommandResult(
+                    returncode=0,
+                    stdout=res.stdout,
+                    stderr="spdlog init failed: rotating_file_sink: failed renaming cli.log to cli.1.log: permission denied",
+                )
+            return res
+
+        env.run = run_with_spdlog_stderr  # type: ignore[method-assign]
+        client = WindscribeClient(env, "windscribe-cli.exe")
+        out = io.StringIO()
+
+        result = run_smart_scan(
+            client,
+            env,
+            protocols=("wireguard",),
+            probe_locations=2,
+            probe_samples=2,
+            quick=True,
+            output=out,
+        )
+
+        # Port "1" from cli.1.log must NOT be parsed as a port
+        self.assertEqual(
+            env.connect_calls,
+            [
+                ("best", "wireguard", "443"),
+                ("Magic City", "wireguard", "443"),
+            ],
+        )
+        self.assertEqual(len(result.results), 1)
+        self.assertEqual(result.results[0].location, "US Central - Atlanta - Magic City")
+        self.assertEqual(result.results[0].port, "443")
 
 
 class TestCliSmartScan(unittest.TestCase):

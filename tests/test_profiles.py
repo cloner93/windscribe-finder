@@ -358,8 +358,11 @@ class FakeVpnEnv:
             return CommandResult(returncode=0, stdout="Disconnected", stderr="")
         if cmd == "connect":
             location = args[2]
-            protocol = args[3]
-            port = args[4] if len(args) > 4 else None
+            proto_spec = args[3]
+            if ":" in proto_spec:
+                protocol, port = proto_spec.split(":", 1)
+            else:
+                protocol, port = proto_spec, None
             key = (location, protocol, port)
             self.connect_calls.append(key)
             outcome = self.outcomes.get(key, "timeout")

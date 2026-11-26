@@ -301,7 +301,7 @@ class TestSingleAttemptFlow(unittest.TestCase):
                 [args for args, _ in runner.calls],
                 [
                     [cli_path, "status"],
-                    [cli_path, "connect", "Germany", "stealth", "443"],
+                    [cli_path, "connect", "Germany", "stealth:443"],
                     [cli_path, "disconnect"],
                 ],
             )
