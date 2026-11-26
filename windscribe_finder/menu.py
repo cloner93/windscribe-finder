@@ -129,6 +129,7 @@ def run_interactive_menu(
 
         protocols = DEFAULT_PROTOCOLS
         ports: tuple[str, ...] = ()
+        client: WindscribeClient | None = None
         if ask_protocols:
             protocols_raw = _prompt(
                 inp,
@@ -139,7 +140,35 @@ def run_interactive_menu(
                 return False
             protocols = parse_protocol_list(protocols_raw)
 
-            ports_raw = _prompt(inp, out, "Ports (comma-separated, e.g. 443,80,53; Enter for all): ")
+            client = _get_client()
+            ports_by_proto: list[tuple[str, list[str]]] = []
+            if client is not None:
+                try:
+                    for proto in protocols:
+                        live_ports = client.list_ports(proto)
+                        if live_ports:
+                            ports_by_proto.append((proto, live_ports))
+                except (WindscribeNotReadyError, WindscribeError):
+                    ports_by_proto = []
+
+            if len(ports_by_proto) == 1:
+                proto_name, proto_ports = ports_by_proto[0]
+                print(
+                    f"Available ports for {proto_name}: {', '.join(proto_ports)}",
+                    file=out,
+                    flush=True,
+                )
+                ports_prompt = "Ports (comma-separated, Enter for all): "
+            elif len(ports_by_proto) > 1:
+                print("Available ports:", file=out)
+                for proto_name, proto_ports in ports_by_proto:
+                    print(f"  {proto_name}: {', '.join(proto_ports)}", file=out)
+                out.flush()
+                ports_prompt = "Ports (comma-separated, Enter for all): "
+            else:
+                ports_prompt = "Ports (comma-separated, e.g. 443,80,53; Enter for all): "
+
+            ports_raw = _prompt(inp, out, ports_prompt)
             if ports_raw is None:
                 return False
             ports = parse_csv_list(ports_raw)
@@ -159,7 +188,8 @@ def run_interactive_menu(
             keep_connected = _parse_bool(keep_raw, default=default_keep_connected)
 
         regions = parse_csv_list(regions_raw)
-        client = _get_client()
+        if client is None:
+            client = _get_client()
         if client is None:
             return True
 

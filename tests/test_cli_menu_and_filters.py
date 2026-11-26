@@ -833,6 +833,9 @@ class TestInteractiveMenu(unittest.TestCase):
             self.assertNotIn(("Switzerland", "stealth", "8443"), env.connect_calls)
             self.assertIn(("Germany", "stealth", "8443"), env.connect_calls)
             self.assertIn(("Germany", "wireguard", "443"), env.connect_calls)
+            menu_output = out.getvalue()
+            self.assertIn("Available ports for stealth: 8443", menu_output)
+            self.assertIn("Available ports:\n  wireguard: 443\n  stealth: 8443", menu_output)
 
     def test_interactive_menu_views_profiles_presets_and_handles_invalid_choice(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
