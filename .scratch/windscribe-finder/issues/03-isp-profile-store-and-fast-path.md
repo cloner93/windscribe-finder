@@ -4,11 +4,11 @@
 
 **Blocked by:** 02: Dynamic Locations/Ports and Two-Phase Smart Scanner
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Persists and loads scan results per `(isp, anti_censorship_mode)` profile in a local JSON file using atomic writes
-- [ ] Tracks success count, failure count, last latency, and last verified timestamp for each `(location, protocol, port)` entry
-- [ ] Orders saved entries so reliable, low-latency combinations are prioritized over stale or frequently failing ones
-- [ ] Runs Phase 0 fast-path before Phase 1/2 when saved entries exist for the active `(isp, anti_censorship_mode)`, returning immediately in quick mode if a saved entry succeeds
-- [ ] Supports displaying available AmneziaWG presets from Windscribe CLI
-- [ ] Automated tests verify persistence against real temporary directories on disk, ranking updates after successes/failures, and Phase 0 fast-path behavior
+- [x] Persists and loads scan results per `(isp, anti_censorship_mode)` profile in a local JSON file using atomic writes
+- [x] Tracks success count, failure count, last latency, and last verified timestamp for each `(location, protocol, port)` entry
+- [x] Orders saved entries so reliable, low-latency combinations are prioritized over stale or frequently failing ones
+- [x] Runs Phase 0 fast-path before Phase 1/2 when saved entries exist for the active `(isp, anti_censorship_mode)`, returning immediately in quick mode if a saved entry succeeds
+- [x] Supports displaying available AmneziaWG presets from Windscribe CLI
+- [x] Automated tests verify persistence against real temporary directories on disk, ranking updates after successes/failures, and Phase 0 fast-path behavior
