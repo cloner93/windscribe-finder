@@ -69,7 +69,7 @@ class TestLocationsParsing(unittest.TestCase):
 
         self.assertEqual(
             client.list_locations(),
-            ["Frankfurt", "Berlin", "Amsterdam"],
+            ["Germany - Frankfurt", "Germany - Berlin", "Netherlands - Amsterdam"],
         )
 
         tabular_output = "\n".join(
@@ -86,7 +86,10 @@ class TestLocationsParsing(unittest.TestCase):
         )
         client2 = WindscribeClient(runner2, "windscribe-cli.exe")
 
-        self.assertEqual(client2.list_locations(), ["Frankfurt", "Amsterdam"])
+        self.assertEqual(
+            client2.list_locations(),
+            ["Germany - Frankfurt", "Netherlands - Amsterdam"],
+        )
 
     def test_list_locations_raises_when_desktop_not_running(self) -> None:
         runner = FakeCommandRunner(
@@ -409,6 +412,198 @@ class TestTwoPhaseSmartScanner(unittest.TestCase):
         self.assertNotIn(("Switzerland", "wireguard", "443"), env.connect_calls)
         self.assertIn("No working connections found.", out.getvalue())
 
+    def test_quick_mode_stays_connected_by_default(self) -> None:
+        env = FakeVpnEnvironment(
+            locations_output="Germany\nNetherlands\n",
+            ports_by_protocol={"wireguard": "443\n"},
+            outcomes={
+                ("Germany", "wireguard", "443"): [65.0, 75.0],
+                ("Netherlands", "wireguard", "443"): [30.0, 30.0],
+            },
+        )
+        client = WindscribeClient(env, "windscribe-cli.exe")
+        out = io.StringIO()
+
+        scan_result = run_smart_scan(
+            client,
+            env,
+            protocols=("wireguard",),
+            probe_locations=2,
+            probe_samples=2,
+            quick=True,
+            output=out,
+        )
+
+        self.assertEqual(env.connect_calls, [("Germany", "wireguard", "443")])
+        self.assertEqual(env.current_connection, ("Germany", "wireguard", "443"))
+        self.assertIsNotNone(scan_result.connected_result)
+        assert scan_result.connected_result is not None
+        self.assertEqual(scan_result.connected_result.location, "Germany")
+        disconnect_calls = [c for c in env.command_calls if c[1] == "disconnect"]
+        self.assertEqual(disconnect_calls, [])
+
+    def test_keep_connected_falls_back_to_next_ranked_server_when_top_reconnect_fails(self) -> None:
+        class FlakyReconnectEnv(FakeVpnEnvironment):
+            def __init__(self, fail_second_connect_for: set[tuple[str, str, str | None]], **kwargs) -> None:
+                super().__init__(**kwargs)
+                self._fail_second_connect_for = fail_second_connect_for
+                self._connect_counts: dict[tuple[str, str, str | None], int] = {}
+
+            def run(self, args: list[str], *, timeout: float | None = None) -> CommandResult:
+                if args[1] == "connect":
+                    key = (args[2], args[3], args[4] if len(args) > 4 else None)
+                    self._connect_counts[key] = self._connect_counts.get(key, 0) + 1
+                    if self._connect_counts[key] >= 2 and key in self._fail_second_connect_for:
+                        self.command_calls.append(list(args))
+                        self.connect_calls.append(key)
+                        return CommandResult(returncode=-1, stdout="", stderr="", timed_out=True)
+                return super().run(args, timeout=timeout)
+
+        env = FlakyReconnectEnv(
+            fail_second_connect_for={("Netherlands", "wireguard", "443")},
+            locations_output="Germany\nNetherlands\nSwitzerland\n",
+            ports_by_protocol={"wireguard": "443\n"},
+            outcomes={
+                ("Germany", "wireguard", "443"): [150.0, 150.0],
+                ("Netherlands", "wireguard", "443"): [50.0, 50.0],
+                ("Switzerland", "wireguard", "443"): [90.0, 90.0],
+            },
+        )
+        client = WindscribeClient(env, "windscribe-cli.exe")
+        out = io.StringIO()
+
+        scan_result = run_smart_scan(
+            client,
+            env,
+            protocols=("wireguard",),
+            probe_locations=1,
+            probe_samples=2,
+            quick=False,
+            keep_connected=True,
+            output=out,
+        )
+
+        # Ranked order: Netherlands (50ms), Switzerland (90ms), Germany (150ms)
+        self.assertEqual(scan_result.results[0].location, "Netherlands")
+        # Top reconnect failed -> fell back to #2 (Switzerland)
+        self.assertEqual(env.current_connection, ("Switzerland", "wireguard", "443"))
+        self.assertEqual(scan_result.connected_result, scan_result.results[1])
+        output = out.getvalue()
+        self.assertIn("Warning: failed to reconnect to Netherlands [wireguard:443]", output)
+        self.assertIn("Falling back to ranked server #2: Switzerland [wireguard:443]", output)
+
+    def test_keep_connected_emits_clear_error_when_all_ranked_reconnects_fail(self) -> None:
+        class AllReconnectsFailEnv(FakeVpnEnvironment):
+            def __init__(self, **kwargs) -> None:
+                super().__init__(**kwargs)
+                self._connect_counts: dict[tuple[str, str, str | None], int] = {}
+
+            def run(self, args: list[str], *, timeout: float | None = None) -> CommandResult:
+                if args[1] == "connect":
+                    key = (args[2], args[3], args[4] if len(args) > 4 else None)
+                    self._connect_counts[key] = self._connect_counts.get(key, 0) + 1
+                    if self._connect_counts[key] >= 2:
+                        self.command_calls.append(list(args))
+                        self.connect_calls.append(key)
+                        return CommandResult(returncode=1, stdout="", stderr="Failed to connect")
+                return super().run(args, timeout=timeout)
+
+        env = AllReconnectsFailEnv(
+            locations_output="Germany\nNetherlands\n",
+            ports_by_protocol={"wireguard": "443\n"},
+            outcomes={
+                ("Germany", "wireguard", "443"): [100.0, 100.0],
+                ("Netherlands", "wireguard", "443"): [50.0, 50.0],
+            },
+        )
+        client = WindscribeClient(env, "windscribe-cli.exe")
+        out = io.StringIO()
+
+        scan_result = run_smart_scan(
+            client,
+            env,
+            protocols=("wireguard",),
+            probe_locations=1,
+            probe_samples=2,
+            quick=False,
+            keep_connected=True,
+            output=out,
+        )
+
+        self.assertIsNone(scan_result.connected_result)
+        self.assertIsNone(env.current_connection)
+        output = out.getvalue()
+        self.assertIn("Warning: failed to reconnect to Netherlands [wireguard:443]", output)
+        self.assertIn("Warning: failed to reconnect to Germany [wireguard:443]", output)
+        self.assertIn("Error: failed to reconnect to any ranked server.", output)
+
+    def test_phase1_picks_diverse_regions_rather_than_two_cities_in_same_country(self) -> None:
+        env = FakeVpnEnvironment(
+            locations_output="\n".join(
+                [
+                    "Germany - Frankfurt (10 Gbps)",
+                    "Germany - Berlin (Pro)",
+                    "Netherlands - Amsterdam (Pro)",
+                    "Switzerland - Zurich",
+                ]
+            ),
+            ports_by_protocol={"wireguard": "443\n"},
+            outcomes={
+                ("Germany - Frankfurt", "wireguard", "443"): "timeout",
+                ("Netherlands - Amsterdam", "wireguard", "443"): "timeout",
+            },
+        )
+        client = WindscribeClient(env, "windscribe-cli.exe")
+        out = io.StringIO()
+
+        run_smart_scan(
+            client,
+            env,
+            protocols=("wireguard",),
+            probe_locations=2,
+            probe_samples=1,
+            discover_only=True,
+            output=out,
+        )
+
+        self.assertEqual(
+            env.connect_calls,
+            [
+                ("Germany - Frankfurt", "wireguard", "443"),
+                ("Netherlands - Amsterdam", "wireguard", "443"),
+            ],
+        )
+
+    def test_phase1_falls_back_to_same_country_when_fewer_distinct_regions_exist(self) -> None:
+        env = FakeVpnEnvironment(
+            locations_output="Germany - Frankfurt\nGermany - Berlin\n",
+            ports_by_protocol={"wireguard": "443\n"},
+            outcomes={
+                ("Germany - Frankfurt", "wireguard", "443"): "timeout",
+                ("Germany - Berlin", "wireguard", "443"): "timeout",
+            },
+        )
+        client = WindscribeClient(env, "windscribe-cli.exe")
+        out = io.StringIO()
+
+        run_smart_scan(
+            client,
+            env,
+            protocols=("wireguard",),
+            probe_locations=2,
+            probe_samples=1,
+            discover_only=True,
+            output=out,
+        )
+
+        self.assertEqual(
+            env.connect_calls,
+            [
+                ("Germany - Frankfurt", "wireguard", "443"),
+                ("Germany - Berlin", "wireguard", "443"),
+            ],
+        )
+
 
 class TestCliSmartScan(unittest.TestCase):
     def _create_dummy_cli(self, tmpdir: str) -> str:
@@ -514,6 +709,45 @@ class TestCliSmartScan(unittest.TestCase):
             self.assertEqual(exit_code, 0, msg=err.getvalue())
             self.assertEqual(env.connect_calls, [("Germany", "wireguard", "443")])
             self.assertEqual(env.current_connection, ("Germany", "wireguard", "443"))
+
+    def test_cli_scan_quick_mode_stays_connected_without_keep_connected_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cli_path = self._create_dummy_cli(tmpdir)
+            env = FakeVpnEnvironment(
+                locations_output="Germany\nNetherlands\n",
+                ports_by_protocol={"wireguard": "443\n"},
+                outcomes={
+                    ("Germany", "wireguard", "443"): [75.0, 85.0],
+                    ("Netherlands", "wireguard", "443"): [40.0, 40.0],
+                },
+            )
+            out = io.StringIO()
+            err = io.StringIO()
+
+            exit_code = main(
+                [
+                    "--cli-path",
+                    cli_path,
+                    "--profile-path",
+                    str(Path(tmpdir) / "profiles.json"),
+                    "--scan",
+                    "--protocols",
+                    "wireguard",
+                    "--quick",
+                    "--probe-samples",
+                    "2",
+                ],
+                runner=env,
+                probe=env,
+                stdout=out,
+                stderr=err,
+            )
+
+            self.assertEqual(exit_code, 0, msg=err.getvalue())
+            self.assertEqual(env.connect_calls, [("Germany", "wireguard", "443")])
+            self.assertEqual(env.current_connection, ("Germany", "wireguard", "443"))
+            disconnect_calls = [c for c in env.command_calls if c[1] == "disconnect"]
+            self.assertEqual(disconnect_calls, [])
 
     def test_cli_scan_returns_one_when_no_working_connections_found(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

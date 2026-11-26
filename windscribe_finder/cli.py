@@ -11,14 +11,25 @@ from windscribe_finder.attempt import run_single_attempt
 from windscribe_finder.menu import run_interactive_menu
 from windscribe_finder.models import WindscribeError, WindscribeNotFoundError, WindscribeNotReadyError
 from windscribe_finder.profiles import DEFAULT_ISP, DEFAULT_MODE, ProfileStore, format_saved_profiles
-from windscribe_finder.scanner import DEFAULT_PROTOCOLS, run_smart_scan
+from windscribe_finder.scanner import (
+    DEFAULT_PROTOCOLS,
+    classify_attempt_status,
+    format_target,
+    parse_csv_list,
+    parse_protocol_list,
+    run_smart_scan,
+)
 from windscribe_finder.seams import (
     CommandRunner,
     ConnectivityProbe,
     HttpConnectivityProbe,
     SubprocessCommandRunner,
 )
-from windscribe_finder.windscribe import WindscribeClient, resolve_cli_path
+from windscribe_finder.windscribe import (
+    WindscribeClient,
+    format_amneziawg_presets,
+    resolve_cli_path,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -81,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--quick",
         action="store_true",
-        help="Stop scanning as soon as the first verified healthy connection is found.",
+        help="Stop scanning as soon as the first verified healthy connection is found and stay connected to it.",
     )
     parser.add_argument(
         "--cli-path",
@@ -140,19 +151,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Display saved ISP and anti-censorship profiles and exit.",
     )
     return parser
-
-
-def _parse_region_list(raw: str | None) -> tuple[str, ...]:
-    if not raw:
-        return ()
-    return tuple(item.strip() for item in raw.split(",") if item.strip())
-
-
-def _parse_protocol_list(raw: str | None) -> tuple[str, ...]:
-    if not raw:
-        return DEFAULT_PROTOCOLS
-    items = tuple(p.strip().lower() for p in raw.split(",") if p.strip())
-    return items or DEFAULT_PROTOCOLS
 
 
 def main(
@@ -223,17 +221,12 @@ def main(
         except (WindscribeNotReadyError, WindscribeError) as exc:
             print(f"Error: {exc}", file=err)
             return 2
-        if not presets:
-            print("No AmneziaWG presets reported by Windscribe CLI.", file=out)
-        else:
-            print("Available AmneziaWG presets:", file=out)
-            for preset in presets:
-                print(f"  - {preset}", file=out)
+        print(format_amneziawg_presets(presets), file=out)
         return 0
 
     if not is_single_attempt:
-        protocols = _parse_protocol_list(args.protocols)
-        regions = _parse_region_list(args.regions)
+        protocols = parse_protocol_list(args.protocols)
+        regions = parse_csv_list(args.regions)
         profile_store = ProfileStore(args.profile_path)
         try:
             scan_result = run_smart_scan(
@@ -246,7 +239,7 @@ def main(
                 probe_timeout=args.probe_timeout,
                 probe_samples=args.probe_samples,
                 quick=args.quick,
-                keep_connected=args.keep_connected,
+                keep_connected=True if args.keep_connected else None,
                 discover_only=args.discover_only,
                 profile_store=profile_store,
                 isp=args.isp,
@@ -276,15 +269,11 @@ def main(
         print(f"Error: {exc}", file=err)
         return 2
 
-    target = f"{result.location} [{result.protocol}" + (
-        f":{result.port}]" if result.port else "]"
-    )
-
+    target = format_target(result.location, result.protocol, result.port)
+    status_label, detail = classify_attempt_status(result)
     if result.healthy and result.avg_latency_ms is not None:
-        print(f"OK {target} - avg latency {result.avg_latency_ms:.1f} ms", file=out)
+        print(f"{status_label} {target} - avg latency {detail}", file=out)
         return 0
 
-    reason = result.error or "Unknown failure"
-    status_label = "TIMEOUT" if result.timed_out else "DEAD TUNNEL" if result.connected else "FAILED"
-    print(f"{status_label} {target} - {reason}", file=out)
+    print(f"{status_label} {target} - {detail}", file=out)
     return 1

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+from collections.abc import Sequence
 from pathlib import Path
 
 from windscribe_finder.models import (
@@ -122,6 +123,15 @@ def parse_amneziawg_presets(output: str) -> list[str]:
     return presets
 
 
+def format_amneziawg_presets(presets: Sequence[str]) -> str:
+    """Format available AmneziaWG presets for human-readable display."""
+    if not presets:
+        return "No AmneziaWG presets reported by Windscribe CLI."
+    lines = ["Available AmneziaWG presets:"]
+    lines.extend(f"  - {preset}" for preset in presets)
+    return "\n".join(lines)
+
+
 def parse_ports(output: str) -> list[str]:
     """Parse valid TCP/UDP port numbers (1-65535) from `windscribe-cli ports <protocol>`."""
     ports: list[str] = []
@@ -141,15 +151,28 @@ def _strip_location_tags(text: str) -> str:
     return " ".join(cleaned.split()).strip()
 
 
+def _format_region_city(region: str | None, city: str) -> str:
+    if not region or not city:
+        return city
+    region_lower = region.lower()
+    city_lower = city.lower()
+    if city_lower == region_lower or city_lower.startswith(f"{region_lower} -"):
+        return city
+    return f"{region} - {city}"
+
+
 def parse_locations(output: str) -> list[str]:
     """Parse `windscribe-cli locations` output into clean location names.
 
-    Includes `(Pro)` and `(10 Gbps)` entries while stripping those status tags
-    and skipping `(Disabled)` entries.
+    Includes `(Pro)` and `(10 Gbps)` entries while stripping those status tags,
+    skipping `(Disabled)` entries, and preserving country/region context
+    (`Region - City`) for sectioned and tabular outputs.
     """
     locations: list[str] = []
     seen: set[str] = set()
+    section_name: str | None = None
     section_disabled = False
+    region_column_index: int | None = None
     city_column_index: int | None = None
 
     for raw_line in output.splitlines():
@@ -161,28 +184,42 @@ def parse_locations(output: str) -> list[str]:
         columns = _TABLE_SPLIT_RE.split(stripped)
         lower_cols = [col.strip().lower() for col in columns]
         if len(columns) >= 2 and lower_cols[0] in {"location", "country", "region"}:
+            region_column_index = 0
             if "city" in lower_cols:
                 city_column_index = lower_cols.index("city")
             else:
                 city_column_index = 0
+            section_name = None
+            section_disabled = False
             continue
 
         # Section header ending with ":" (e.g. "Germany:" or "Turkey (Disabled):")
         if stripped.endswith(":") and not raw_line[:1].isspace():
             section_disabled = bool(_DISABLED_RE.search(stripped))
+            section_name = _strip_location_tags(_DISABLED_RE.sub("", stripped[:-1]))
             continue
 
-        # Reset section_disabled when returning to top-level non-indented lines
+        # Reset section context when returning to top-level non-indented lines
         if not raw_line[:1].isspace():
+            section_name = None
             section_disabled = False
 
         if section_disabled or _DISABLED_RE.search(stripped):
             continue
 
         if city_column_index is not None and len(columns) > city_column_index:
-            candidate = _strip_location_tags(columns[city_column_index])
+            city = _strip_location_tags(columns[city_column_index])
+            region: str | None = None
+            if (
+                region_column_index is not None
+                and region_column_index != city_column_index
+                and len(columns) > region_column_index
+            ):
+                region = _strip_location_tags(columns[region_column_index])
+            candidate = _format_region_city(region, city)
         else:
-            candidate = _strip_location_tags(stripped)
+            city = _strip_location_tags(stripped)
+            candidate = _format_region_city(section_name, city)
 
         if candidate and candidate not in seen:
             seen.add(candidate)
