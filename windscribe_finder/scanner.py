@@ -23,18 +23,73 @@ DEFAULT_PROTOCOLS: tuple[str, ...] = (
 )
 
 
-def _format_target(location: str, protocol: str, port: str | None) -> str:
+def format_target(location: str, protocol: str, port: str | None) -> str:
+    """Format a (location, protocol, port) target label."""
     return f"{location} [{protocol}:{port}]" if port else f"{location} [{protocol}]"
 
 
-def _format_attempt_status(result: AttemptResult) -> str:
+def classify_attempt_status(result: AttemptResult) -> tuple[str, str]:
+    """Return (status_label, detail) for an AttemptResult."""
     if result.healthy and result.avg_latency_ms is not None:
-        return f"OK ({result.avg_latency_ms:.1f} ms)"
+        return "OK", f"{result.avg_latency_ms:.1f} ms"
     if result.timed_out:
-        return f"TIMEOUT ({result.error or 'timed out'})"
+        return "TIMEOUT", result.error or "timed out"
     if result.connected:
-        return f"DEAD TUNNEL ({result.error or 'unreachable'})"
-    return f"FAILED ({result.error or 'connect failed'})"
+        return "DEAD TUNNEL", result.error or "unreachable"
+    return "FAILED", result.error or "connect failed"
+
+
+def format_attempt_status(result: AttemptResult) -> str:
+    """Format a compact status string such as 'OK (42.0 ms)' or 'TIMEOUT (...)'."""
+    label, detail = classify_attempt_status(result)
+    return f"{label} ({detail})"
+
+
+def parse_csv_list(raw: str | None) -> tuple[str, ...]:
+    """Parse a comma-separated string into a tuple of non-empty stripped items."""
+    if not raw:
+        return ()
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+def parse_protocol_list(raw: str | None) -> tuple[str, ...]:
+    """Parse a comma-separated protocol list, falling back to DEFAULT_PROTOCOLS."""
+    items = tuple(p.lower() for p in parse_csv_list(raw))
+    return items or DEFAULT_PROTOCOLS
+
+
+def _location_region_key(location: str) -> str:
+    """Extract the leading country/region token from a location label for diversity grouping."""
+    for sep in (" - ", ","):
+        if sep in location:
+            head = location.split(sep, 1)[0].strip()
+            if head:
+                return head.lower()
+    return location.strip().lower()
+
+
+def _select_probe_locations(locations: Sequence[str], sample_count: int) -> list[str]:
+    """Select up to sample_count locations preferring distinct countries/regions."""
+    target = max(1, min(sample_count, len(locations)))
+    selected: list[str] = []
+    seen_regions: set[str] = set()
+    deferred: list[str] = []
+
+    for loc in locations:
+        region_key = _location_region_key(loc)
+        if region_key not in seen_regions:
+            seen_regions.add(region_key)
+            selected.append(loc)
+            if len(selected) == target:
+                return selected
+        else:
+            deferred.append(loc)
+
+    for loc in deferred:
+        selected.append(loc)
+        if len(selected) == target:
+            break
+    return selected
 
 
 def _emit(out: TextIO | None, line: str) -> None:
@@ -130,16 +185,22 @@ def run_smart_scan(
     probe_samples: int = 3,
     probe_urls: Sequence[str] = DEFAULT_PROBE_URLS,
     quick: bool = False,
-    keep_connected: bool = False,
+    keep_connected: bool | None = None,
     discover_only: bool = False,
     profile_store: ProfileStore | None = None,
     isp: str = DEFAULT_ISP,
     mode: str = DEFAULT_MODE,
     output: TextIO | None = None,
 ) -> ScanResult:
-    """Run smart scan: optional Phase 0 fast-path, Phase 1 discovery, Phase 2 location sweep."""
+    """Run smart scan: optional Phase 0 fast-path, Phase 1 discovery, Phase 2 location sweep.
+
+    When ``keep_connected`` is ``None`` (the default), quick mode stays connected
+    on the first verified healthy server while full scans disconnect after testing.
+    """
     out = output if output is not None else sys.stdout
     client.check_ready()
+
+    effective_keep_connected = quick if keep_connected is None else keep_connected
 
     working_pairs: list[ProtocolPort] = []
     all_attempts: list[AttemptResult] = []
@@ -148,6 +209,51 @@ def run_smart_scan(
 
     allowed_protocols = {p.strip().lower() for p in protocols if p.strip()}
     region_tokens = [r.strip().lower() for r in (regions or ()) if r.strip()]
+
+    def _execute_and_record(
+        *,
+        phase_label: str,
+        progress_label: str,
+        location: str,
+        protocol: str,
+        port: str | None,
+        stay_connected: bool = False,
+    ) -> AttemptResult:
+        tested_keys.add((location, protocol, port))
+        attempt = run_single_attempt(
+            client,
+            probe,
+            location=location,
+            protocol=protocol,
+            port=port,
+            connect_timeout=connect_timeout,
+            probe_timeout=probe_timeout,
+            probe_samples=probe_samples,
+            probe_urls=probe_urls,
+            keep_connected=stay_connected,
+            check_ready=False,
+        )
+        all_attempts.append(attempt)
+        if profile_store is not None:
+            profile_store.record_attempt(isp, mode, attempt)
+        _emit(
+            out,
+            f"[{phase_label}] [{progress_label}] "
+            f"{format_target(location, protocol, port)} -> "
+            f"{format_attempt_status(attempt)}",
+        )
+        return attempt
+
+    def _finish_quick() -> ScanResult:
+        ranked = rank_results(all_attempts)
+        _emit(out, "")
+        _emit(out, format_ranked_table(ranked))
+        return ScanResult(
+            working_pairs=tuple(working_pairs),
+            results=ranked,
+            all_attempts=tuple(all_attempts),
+            connected_result=connected_result,
+        )
 
     try:
         # Phase 0: Saved Profile Fast-Path
@@ -166,30 +272,14 @@ def run_smart_scan(
                     f"({len(saved_entries)} saved entry/entries for '{isp}' / '{mode}')",
                 )
                 for idx, entry in enumerate(saved_entries, start=1):
-                    key = (entry.location, entry.protocol, entry.port)
-                    tested_keys.add(key)
-
-                    stay_connected_now = quick and keep_connected
-                    attempt = run_single_attempt(
-                        client,
-                        probe,
+                    stay_connected_now = quick and effective_keep_connected
+                    attempt = _execute_and_record(
+                        phase_label="Phase 0",
+                        progress_label=f"{idx}/{len(saved_entries)}",
                         location=entry.location,
                         protocol=entry.protocol,
                         port=entry.port,
-                        connect_timeout=connect_timeout,
-                        probe_timeout=probe_timeout,
-                        probe_samples=probe_samples,
-                        probe_urls=probe_urls,
-                        keep_connected=stay_connected_now,
-                        check_ready=False,
-                    )
-                    all_attempts.append(attempt)
-                    profile_store.record_attempt(isp, mode, attempt)
-                    _emit(
-                        out,
-                        f"[Phase 0] [{idx}/{len(saved_entries)}] "
-                        f"{_format_target(entry.location, entry.protocol, entry.port)} -> "
-                        f"{_format_attempt_status(attempt)}",
+                        stay_connected=stay_connected_now,
                     )
 
                     if attempt.healthy:
@@ -199,15 +289,7 @@ def run_smart_scan(
                         if stay_connected_now:
                             connected_result = attempt
                         if quick:
-                            ranked = rank_results(all_attempts)
-                            _emit(out, "")
-                            _emit(out, format_ranked_table(ranked))
-                            return ScanResult(
-                                working_pairs=tuple(working_pairs),
-                                results=ranked,
-                                all_attempts=tuple(all_attempts),
-                                connected_result=connected_result,
-                            )
+                            return _finish_quick()
 
         locations = client.list_locations()
         if region_tokens:
@@ -237,8 +319,7 @@ def run_smart_scan(
                 connected_result=connected_result,
             )
 
-        sample_count = max(1, min(probe_locations, len(locations)))
-        sample_locations = locations[:sample_count]
+        sample_locations = _select_probe_locations(locations, probe_locations)
 
         # Phase 1: Protocol & Port Discovery
         _emit(
@@ -256,30 +337,15 @@ def run_smart_scan(
                 if key in tested_keys:
                     continue
                 phase1_index += 1
-                tested_keys.add(key)
 
-                stay_connected_now = quick and keep_connected
-                attempt = run_single_attempt(
-                    client,
-                    probe,
+                stay_connected_now = quick and effective_keep_connected
+                attempt = _execute_and_record(
+                    phase_label="Phase 1",
+                    progress_label=str(phase1_index),
                     location=location,
                     protocol=pair.protocol,
                     port=pair.port,
-                    connect_timeout=connect_timeout,
-                    probe_timeout=probe_timeout,
-                    probe_samples=probe_samples,
-                    probe_urls=probe_urls,
-                    keep_connected=stay_connected_now,
-                    check_ready=False,
-                )
-                all_attempts.append(attempt)
-                if profile_store is not None:
-                    profile_store.record_attempt(isp, mode, attempt)
-                _emit(
-                    out,
-                    f"[Phase 1] [{phase1_index}] "
-                    f"{_format_target(location, pair.protocol, pair.port)} -> "
-                    f"{_format_attempt_status(attempt)}",
+                    stay_connected=stay_connected_now,
                 )
 
                 if attempt.healthy:
@@ -291,15 +357,7 @@ def run_smart_scan(
                     break
 
             if pair_worked and quick:
-                ranked = rank_results(all_attempts)
-                _emit(out, "")
-                _emit(out, format_ranked_table(ranked))
-                return ScanResult(
-                    working_pairs=tuple(working_pairs),
-                    results=ranked,
-                    all_attempts=tuple(all_attempts),
-                    connected_result=connected_result,
-                )
+                return _finish_quick()
 
         # Phase 2: Location Sweep using only working (protocol, port) pairs
         if working_pairs and not discover_only:
@@ -315,52 +373,44 @@ def run_smart_scan(
                 f"({len(working_pairs)} working pair(s), {len(sweep_jobs)} remaining attempt(s))",
             )
             for idx, (location, pair) in enumerate(sweep_jobs, start=1):
-                tested_keys.add((location, pair.protocol, pair.port))
-                attempt = run_single_attempt(
-                    client,
-                    probe,
+                _execute_and_record(
+                    phase_label="Phase 2",
+                    progress_label=f"{idx}/{len(sweep_jobs)}",
                     location=location,
                     protocol=pair.protocol,
                     port=pair.port,
-                    connect_timeout=connect_timeout,
-                    probe_timeout=probe_timeout,
-                    probe_samples=probe_samples,
-                    probe_urls=probe_urls,
-                    keep_connected=False,
-                    check_ready=False,
-                )
-                all_attempts.append(attempt)
-                if profile_store is not None:
-                    profile_store.record_attempt(isp, mode, attempt)
-                _emit(
-                    out,
-                    f"[Phase 2] [{idx}/{len(sweep_jobs)}] "
-                    f"{_format_target(location, pair.protocol, pair.port)} -> "
-                    f"{_format_attempt_status(attempt)}",
+                    stay_connected=False,
                 )
 
         ranked = rank_results(all_attempts)
         _emit(out, "")
         _emit(out, format_ranked_table(ranked))
 
-        if keep_connected and ranked and connected_result is None:
-            best = ranked[0]
-            _emit(
-                out,
-                f"\nConnecting to best server: {_format_target(best.location, best.protocol, best.port)}...",
-            )
-            try:
-                connected, _, _ = client.connect(
-                    best.location,
-                    best.protocol,
-                    best.port,
-                    timeout=connect_timeout,
-                )
-            except KeyboardInterrupt:
+        if effective_keep_connected and ranked and connected_result is None:
+            for idx, candidate in enumerate(ranked, start=1):
+                target = format_target(candidate.location, candidate.protocol, candidate.port)
+                if idx == 1:
+                    _emit(out, f"\nConnecting to best server: {target}...")
+                else:
+                    _emit(out, f"Falling back to ranked server #{idx}: {target}...")
+                try:
+                    connected, error, timed_out = client.connect(
+                        candidate.location,
+                        candidate.protocol,
+                        candidate.port,
+                        timeout=connect_timeout,
+                    )
+                except KeyboardInterrupt:
+                    client.disconnect()
+                    raise
+                if connected:
+                    connected_result = candidate
+                    break
+                reason = error or ("timed out" if timed_out else "connect failed")
+                _emit(out, f"Warning: failed to reconnect to {target} ({reason}).")
                 client.disconnect()
-                raise
-            if connected:
-                connected_result = best
+            if connected_result is None:
+                _emit(out, "Error: failed to reconnect to any ranked server.")
 
         return ScanResult(
             working_pairs=tuple(working_pairs),

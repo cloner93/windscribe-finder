@@ -275,6 +275,72 @@ class TestRegionAndProtocolFiltering(unittest.TestCase):
             self.assertNotIn("Phase 2: Location Sweep", output)
             self.assertIn("stealth:8443", output)
 
+    def test_regions_filter_matches_sectioned_and_tabular_locations_output(self) -> None:
+        sectioned_output = "\n".join(
+            [
+                "Germany:",
+                "  Frankfurt (10 Gbps)",
+                "  Berlin (Pro)",
+                "Netherlands:",
+                "  Amsterdam (Pro)",
+            ]
+        )
+        tabular_output = "\n".join(
+            [
+                "Location        Short Name      City            Label",
+                "----------------------------------------------------------",
+                "Germany         DE              Frankfurt       Castle (10 Gbps)",
+                "Germany         DE              Berlin          Wall (Pro)",
+                "Netherlands     NL              Amsterdam       Canal (Pro)",
+            ]
+        )
+
+        for label, locations_output in (("sectioned", sectioned_output), ("tabular", tabular_output)):
+            with self.subTest(format=label), tempfile.TemporaryDirectory() as tmpdir:
+                cli_path = _make_dummy_cli(tmpdir)
+                env = FakeVpnEnv(
+                    locations_output=locations_output,
+                    ports_by_protocol={"stealth": "8443\n"},
+                    outcomes={
+                        ("Germany - Frankfurt", "stealth", "8443"): [80.0, 90.0],
+                        ("Germany - Berlin", "stealth", "8443"): [60.0, 70.0],
+                        ("Netherlands - Amsterdam", "stealth", "8443"): [40.0, 40.0],
+                    },
+                )
+                out = io.StringIO()
+                err = io.StringIO()
+
+                rc = main(
+                    [
+                        "--cli-path",
+                        cli_path,
+                        "--profile-path",
+                        str(Path(tmpdir) / "profiles.json"),
+                        "--regions",
+                        "Germany",
+                        "--protocols",
+                        "stealth",
+                        "--probe-locations",
+                        "1",
+                        "--probe-samples",
+                        "2",
+                    ],
+                    runner=env,
+                    probe=env,
+                    stdout=out,
+                    stderr=err,
+                )
+
+                self.assertEqual(rc, 0, msg=err.getvalue())
+                self.assertEqual(
+                    env.connect_calls,
+                    [
+                        ("Germany - Frankfurt", "stealth", "8443"),
+                        ("Germany - Berlin", "stealth", "8443"),
+                    ],
+                )
+                self.assertNotIn("Netherlands", out.getvalue())
+
 
 class TestGracefulInterruptHandling(unittest.TestCase):
     def test_ctrl_c_during_phase2_disconnects_saves_winners_and_prints_partial_summary(self) -> None:
