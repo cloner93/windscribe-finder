@@ -1,0 +1,178 @@
+"""Windscribe Desktop CLI discovery and command wrapper."""
+
+from __future__ import annotations
+
+import os
+import shutil
+from pathlib import Path
+
+from windscribe_finder.models import (
+    CommandResult,
+    WindscribeNotFoundError,
+    WindscribeNotReadyError,
+)
+from windscribe_finder.seams import CommandRunner
+
+_NOT_RUNNING_PHRASES = (
+    "not running",
+    "is not running",
+    "please launch",
+    "start windscribe",
+    "cannot connect to windscribe",
+    "failed to connect to windscribe",
+    "windscribe application is not running",
+    "app is not running",
+)
+
+_NOT_LOGGED_IN_PHRASES = (
+    "not logged in",
+    "logged out",
+    "please log in",
+    "login required",
+    "sign in",
+)
+
+_CONNECT_FAILURE_PHRASES = (
+    "failed",
+    "error",
+    "invalid",
+    "unable to connect",
+    "could not connect",
+    "not found",
+)
+
+
+def _candidate_windows_paths() -> list[Path]:
+    candidates: list[Path] = []
+    program_files = os.environ.get("PROGRAMFILES")
+    if program_files:
+        candidates.append(Path(program_files) / "Windscribe" / "windscribe-cli.exe")
+
+    program_files_x86 = os.environ.get("PROGRAMFILES(X86)")
+    if program_files_x86:
+        candidates.append(Path(program_files_x86) / "Windscribe" / "windscribe-cli.exe")
+
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        candidates.append(Path(local_app_data) / "Programs" / "Windscribe" / "windscribe-cli.exe")
+
+    if not program_files and not program_files_x86 and not local_app_data:
+        candidates.extend(
+            [
+                Path(r"C:\Program Files\Windscribe\windscribe-cli.exe"),
+                Path(r"C:\Program Files (x86)\Windscribe\windscribe-cli.exe"),
+            ]
+        )
+    return candidates
+
+
+def resolve_cli_path(cli_path: str | Path | None = None) -> str:
+    """Resolve the Windscribe CLI executable path from an override or standard Windows locations."""
+    if cli_path is not None:
+        explicit = Path(cli_path)
+        if not explicit.is_file():
+            raise WindscribeNotFoundError(
+                f"Windscribe CLI executable not found at '{explicit}'. "
+                "Verify the path passed to --cli-path."
+            )
+        return str(explicit)
+
+    for candidate in _candidate_windows_paths():
+        if candidate.is_file():
+            return str(candidate)
+
+    for binary_name in ("windscribe-cli", "windscribe-cli.exe"):
+        found = shutil.which(binary_name)
+        if found:
+            return found
+
+    raise WindscribeNotFoundError(
+        "Could not locate windscribe-cli.exe automatically. "
+        "Install Windscribe Desktop or provide --cli-path <path>."
+    )
+
+
+def _combined_output(result: CommandResult) -> str:
+    return f"{result.stdout}\n{result.stderr}".strip()
+
+
+def _check_not_ready(result: CommandResult) -> None:
+    combined_lower = _combined_output(result).lower()
+    if any(phrase in combined_lower for phrase in _NOT_RUNNING_PHRASES):
+        raise WindscribeNotReadyError(
+            "Windscribe Desktop is not running. "
+            "Please open Windscribe Desktop and log in before running this tool."
+        )
+    if any(phrase in combined_lower for phrase in _NOT_LOGGED_IN_PHRASES):
+        raise WindscribeNotReadyError(
+            "Windscribe Desktop is not logged in. "
+            "Please open Windscribe Desktop and log in before running this tool."
+        )
+
+
+class WindscribeClient:
+    """High-level wrapper around the Windscribe Desktop CLI."""
+
+    def __init__(self, runner: CommandRunner, cli_path: str | Path) -> None:
+        self._runner = runner
+        self._cli_path = str(cli_path)
+
+    @property
+    def cli_path(self) -> str:
+        return self._cli_path
+
+    def check_ready(self, *, timeout: float = 10.0) -> str:
+        """Verify Windscribe Desktop is running and logged in."""
+        result = self._runner.run([self._cli_path, "status"], timeout=timeout)
+        if result.timed_out:
+            raise WindscribeNotReadyError(
+                "Timed out checking Windscribe Desktop status. "
+                "Please ensure Windscribe Desktop is open and responsive."
+            )
+        _check_not_ready(result)
+        if result.returncode != 0:
+            detail = _combined_output(result) or f"exit code {result.returncode}"
+            raise WindscribeNotReadyError(
+                "Windscribe Desktop is not ready. "
+                f"Ensure Windscribe Desktop is open and logged in ({detail})."
+            )
+        return result.stdout.strip()
+
+    def connect(
+        self,
+        location: str,
+        protocol: str,
+        port: str | None = None,
+        *,
+        timeout: float = 15.0,
+    ) -> tuple[bool, str | None, bool]:
+        """Attempt to connect to location using protocol and optional port.
+
+        Returns (connected, error_message, timed_out).
+        """
+        args = [self._cli_path, "connect", location, protocol]
+        if port is not None and str(port).strip():
+            args.append(str(port).strip())
+
+        result = self._runner.run(args, timeout=timeout)
+        if result.timed_out:
+            return False, f"Connection timed out after {timeout:.1f}s", True
+
+        _check_not_ready(result)
+
+        combined = _combined_output(result)
+        combined_lower = combined.lower()
+        if result.returncode != 0:
+            return False, combined or f"Windscribe connect failed with exit code {result.returncode}", False
+
+        if "disconnected" in combined_lower and "connected" not in combined_lower.replace("disconnected", ""):
+            return False, combined or "Windscribe remained disconnected", False
+
+        if any(phrase in combined_lower for phrase in _CONNECT_FAILURE_PHRASES):
+            return False, combined, False
+
+        return True, None, False
+
+    def disconnect(self, *, timeout: float = 10.0) -> CommandResult:
+        """Disconnect any active or in-progress Windscribe connection."""
+        return self._runner.run([self._cli_path, "disconnect"], timeout=timeout)
