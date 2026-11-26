@@ -4,11 +4,11 @@
 
 **Blocked by:** 03: ISP Profile Store, Anti-Censorship Tagging, and Phase 0 Fast-Path
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Running with no arguments launches a clear interactive text menu covering quick connect, smart scan, protocol discovery, saved profiles view, and AmneziaWG presets view
-- [ ] Supports full CLI flags for non-interactive execution including ISP, anti-censorship mode, region/location filters, protocol filters, timeout, quick mode, and keep-connected
-- [ ] Region/location and protocol filters narrow candidate locations and protocols accurately (case-insensitive matching)
-- [ ] Interrupting a running scan with `Ctrl+C` cleanly disconnects any in-flight connection, saves winning results found so far, and prints a partial summary
-- [ ] Includes a one-click Windows batch launcher and a concise README explaining prerequisites and usage
-- [ ] Automated tests cover CLI flag parsing, interactive menu dispatch, filtering, and graceful interrupt cleanup/persistence
+- [x] Running with no arguments launches a clear interactive text menu covering quick connect, smart scan, protocol discovery, saved profiles view, and AmneziaWG presets view
+- [x] Supports full CLI flags for non-interactive execution including ISP, anti-censorship mode, region/location filters, protocol filters, timeout, quick mode, and keep-connected
+- [x] Region/location and protocol filters narrow candidate locations and protocols accurately (case-insensitive matching)
+- [x] Interrupting a running scan with `Ctrl+C` cleanly disconnects any in-flight connection, saves winning results found so far, and prints a partial summary
+- [x] Includes a one-click Windows batch launcher and a concise README explaining prerequisites and usage
+- [x] Automated tests cover CLI flag parsing, interactive menu dispatch, filtering, and graceful interrupt cleanup/persistence
