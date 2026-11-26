@@ -128,6 +128,7 @@ def run_interactive_menu(
             return False
 
         protocols = DEFAULT_PROTOCOLS
+        ports: tuple[str, ...] = ()
         if ask_protocols:
             protocols_raw = _prompt(
                 inp,
@@ -137,6 +138,11 @@ def run_interactive_menu(
             if protocols_raw is None:
                 return False
             protocols = parse_protocol_list(protocols_raw)
+
+            ports_raw = _prompt(inp, out, "Ports (comma-separated, e.g. 443,80,53; Enter for all): ")
+            if ports_raw is None:
+                return False
+            ports = parse_csv_list(ports_raw)
 
         timeout = default_timeout
         if ask_timeout:
@@ -162,6 +168,7 @@ def run_interactive_menu(
                 client,
                 probe,
                 protocols=protocols,
+                ports=ports or None,
                 regions=regions or None,
                 probe_locations=probe_locations,
                 connect_timeout=timeout,

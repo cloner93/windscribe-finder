@@ -33,8 +33,8 @@ python3 -m windscribe_finder --cli-path /Applications/Windscribe.app/Contents/Ma
 # Quick connect using saved ISP profile (stops & stays connected on first healthy server)
 python -m windscribe_finder --scan --isp mci --mode default --quick
 
-# Smart scan filtered by country and protocol
-python -m windscribe_finder --scan --isp irancell --regions Germany,Netherlands --protocols wireguard,stealth --keep-connected
+# Smart scan filtered by country, protocol, and port
+python -m windscribe_finder --scan --isp irancell --regions Germany,Netherlands --protocols wireguard,stealth --ports 443,54783 --keep-connected
 
 # Discover working protocol/port pairs only
 python -m windscribe_finder --discover-only

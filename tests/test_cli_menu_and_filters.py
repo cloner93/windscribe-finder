@@ -344,6 +344,117 @@ class TestRegionAndProtocolFiltering(unittest.TestCase):
                 )
                 self.assertNotIn("Netherlands", out.getvalue())
 
+    def test_ports_filter_and_all_listed_regions_probed_in_phase1(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cli_path = _make_dummy_cli(tmpdir)
+            env = FakeVpnEnv(
+                locations_output="\n".join(
+                    [
+                        "Best Location - Alphorn (10 Gbps)",
+                        "Switzerland - Zurich - Alphorn (10 Gbps)",
+                        "Finland - Helsinki - Sauna (10 Gbps)",
+                        "Sweden - Stockholm - Ikea (10 Gbps)",
+                        "Netherlands - Amsterdam - Canal (10 Gbps)",
+                    ]
+                ),
+                ports_by_protocol={"udp": "443, 80, 53, 123, 1194, 54783\n"},
+                outcomes={
+                    ("Sauna", "udp", "54783"): "timeout",
+                    ("Ikea", "udp", "54783"): "timeout",
+                    ("Canal", "udp", "54783"): [75.0, 85.0],
+                },
+            )
+            out = io.StringIO()
+            err = io.StringIO()
+
+            rc = main(
+                [
+                    "--cli-path",
+                    cli_path,
+                    "--profile-path",
+                    str(Path(tmpdir) / "profiles.json"),
+                    "--regions",
+                    "finland,sweden,netherlands",
+                    "--protocols",
+                    "udp",
+                    "--ports",
+                    "54783",
+                    "--probe-locations",
+                    "2",
+                    "--probe-samples",
+                    "2",
+                ],
+                runner=env,
+                probe=env,
+                stdout=out,
+                stderr=err,
+            )
+
+            self.assertEqual(rc, 0, msg=err.getvalue())
+            # All 3 listed countries should be probed even though default probe_locations=2,
+            # and only port 54783 should be tested.
+            self.assertEqual(
+                env.connect_calls,
+                [
+                    ("Sauna", "udp", "54783"),
+                    ("Ikea", "udp", "54783"),
+                    ("Canal", "udp", "54783"),
+                ],
+            )
+
+    def test_best_location_alias_and_same_nickname_server_not_both_probed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cli_path = _make_dummy_cli(tmpdir)
+            env = FakeVpnEnv(
+                locations_output="\n".join(
+                    [
+                        "Best Location - Alphorn (10 Gbps)",
+                        "Switzerland - Zurich - Alphorn (10 Gbps)",
+                        "Germany - Frankfurt - Castle (10 Gbps)",
+                    ]
+                ),
+                ports_by_protocol={"udp": "443\n"},
+                outcomes={
+                    ("best", "udp", "443"): "timeout",
+                    ("Castle", "udp", "443"): [60.0, 60.0],
+                },
+            )
+            out = io.StringIO()
+            err = io.StringIO()
+
+            rc = main(
+                [
+                    "--cli-path",
+                    cli_path,
+                    "--profile-path",
+                    str(Path(tmpdir) / "profiles.json"),
+                    "--protocols",
+                    "udp",
+                    "--ports",
+                    "443",
+                    "--discover-only",
+                    "--probe-locations",
+                    "2",
+                    "--probe-samples",
+                    "2",
+                ],
+                runner=env,
+                probe=env,
+                stdout=out,
+                stderr=err,
+            )
+
+            self.assertEqual(rc, 0, msg=err.getvalue())
+            # Should probe Best Location - Alphorn ("best") and Germany - Frankfurt - Castle ("Castle"),
+            # skipping duplicate Switzerland - Zurich - Alphorn.
+            self.assertEqual(
+                env.connect_calls,
+                [
+                    ("best", "udp", "443"),
+                    ("Castle", "udp", "443"),
+                ],
+            )
+
 
 class TestGracefulInterruptHandling(unittest.TestCase):
     def test_ctrl_c_during_phase2_disconnects_saves_winners_and_prints_partial_summary(self) -> None:
@@ -602,12 +713,12 @@ class TestInteractiveMenu(unittest.TestCase):
             )
             out = io.StringIO()
             err = io.StringIO()
-            # Choice 2 (Smart Scan): ISP=Shatel, mode=off, regions=germany, protocols=stealth, timeout=10, keep=n
-            # Choice 3 (Discovery only): ISP=Shatel, mode=off, regions="", protocols=wireguard,stealth, timeout=""
+            # Choice 2 (Smart Scan): ISP=Shatel, mode=off, regions=germany, protocols=stealth, ports="", timeout=10, keep=n
+            # Choice 3 (Discovery only): ISP=Shatel, mode=off, regions="", protocols=wireguard,stealth, ports="", timeout=""
             # Choice 6 (Exit)
             user_input = io.StringIO(
-                "2\nShatel\noff\ngermany\nstealth\n10\nn\n"
-                "3\nShatel\noff\n\nwireguard,stealth\n\n"
+                "2\nShatel\noff\ngermany\nstealth\n\n10\nn\n"
+                "3\nShatel\noff\n\nwireguard,stealth\n\n\n"
                 "6\n"
             )
 

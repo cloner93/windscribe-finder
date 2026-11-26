@@ -84,6 +84,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--ports",
+        default=None,
+        help="Comma-separated port filter for smart scan (e.g. '443,80,53'; default: all valid ports).",
+    )
+    parser.add_argument(
         "--probe-locations",
         type=int,
         default=2,
@@ -226,6 +231,7 @@ def main(
 
     if not is_single_attempt:
         protocols = parse_protocol_list(args.protocols)
+        ports = parse_csv_list(args.ports)
         regions = parse_csv_list(args.regions)
         profile_store = ProfileStore(args.profile_path)
         try:
@@ -233,6 +239,7 @@ def main(
                 client,
                 active_probe,
                 protocols=protocols,
+                ports=ports or None,
                 regions=regions or None,
                 probe_locations=args.probe_locations,
                 connect_timeout=args.timeout,

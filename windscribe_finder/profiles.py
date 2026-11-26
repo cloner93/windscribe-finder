@@ -128,9 +128,12 @@ class ProfileStore:
 
     def _load(self) -> None:
         self._profiles.clear()
-        if not self._path.is_file():
+        try:
+            if not self._path.is_file():
+                return
+            raw_text = self._path.read_text(encoding="utf-8")
+        except OSError:
             return
-        raw_text = self._path.read_text(encoding="utf-8")
         if not raw_text.strip():
             return
         data = json.loads(raw_text)

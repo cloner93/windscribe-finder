@@ -142,6 +142,8 @@ def parse_amneziawg_presets(output: str) -> list[str]:
             continue
         if lower in {"none", "no presets available", "no amneziawg presets available"}:
             continue
+        if lower.startswith(("to use a preset", "set protocol tweaks", "amneziawg is used only")):
+            continue
         cleaned = _BULLET_PREFIX_RE.sub("", stripped).strip()
         if cleaned and cleaned not in seen:
             seen.add(cleaned)
