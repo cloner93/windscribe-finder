@@ -22,9 +22,11 @@ def run_single_attempt(
     probe_samples: int = 3,
     probe_urls: Sequence[str] = DEFAULT_PROBE_URLS,
     keep_connected: bool = False,
+    check_ready: bool = True,
 ) -> AttemptResult:
     """Run pre-flight check, connect, verify external connectivity, and cleanly disconnect."""
-    client.check_ready()
+    if check_ready:
+        client.check_ready()
 
     should_disconnect = True
     try:

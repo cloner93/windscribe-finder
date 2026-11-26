@@ -8,7 +8,8 @@ from collections.abc import Sequence
 from typing import TextIO
 
 from windscribe_finder.attempt import run_single_attempt
-from windscribe_finder.models import WindscribeNotFoundError, WindscribeNotReadyError
+from windscribe_finder.models import WindscribeError, WindscribeNotFoundError, WindscribeNotReadyError
+from windscribe_finder.scanner import DEFAULT_PROTOCOLS, run_smart_scan
 from windscribe_finder.seams import (
     CommandRunner,
     ConnectivityProbe,
@@ -21,24 +22,48 @@ from windscribe_finder.windscribe import WindscribeClient, resolve_cli_path
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="windscribe_finder",
-        description="Test and verify Windscribe VPN connections.",
+        description="Test and discover working Windscribe VPN connections.",
+    )
+    parser.add_argument(
+        "--scan",
+        action="store_true",
+        help="Run the two-phase smart scanner (protocol/port discovery + location sweep).",
     )
     parser.add_argument(
         "--location",
         "-l",
-        required=True,
-        help="Windscribe location name to connect to (e.g. 'Germany' or 'Frankfurt').",
+        default=None,
+        help="Windscribe location name to connect to for a single attempt (e.g. 'Germany').",
     )
     parser.add_argument(
         "--protocol",
         "-p",
-        required=True,
-        help="Transport protocol (e.g. wireguard, stealth, wstunnel, udp, tcp, ikev2).",
+        default=None,
+        help="Transport protocol for a single attempt (e.g. wireguard, stealth, wstunnel, udp, tcp, ikev2).",
     )
     parser.add_argument(
         "--port",
         default=None,
-        help="Optional port number for the chosen protocol.",
+        help="Optional port number for a single attempt.",
+    )
+    parser.add_argument(
+        "--protocols",
+        default=None,
+        help=(
+            "Comma-separated candidate protocols for smart scan "
+            f"(default: {','.join(DEFAULT_PROTOCOLS)})."
+        ),
+    )
+    parser.add_argument(
+        "--probe-locations",
+        type=int,
+        default=2,
+        help="Number of sample locations to probe during Phase 1 discovery (default: 2).",
+    )
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Stop scanning as soon as the first verified healthy connection is found.",
     )
     parser.add_argument(
         "--cli-path",
@@ -66,9 +91,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--keep-connected",
         action="store_true",
-        help="Stay connected if the tunnel passes the health check.",
+        help="Stay connected to the verified (or top-ranked) healthy server.",
     )
     return parser
+
+
+def _parse_protocol_list(raw: str | None) -> tuple[str, ...]:
+    if not raw:
+        return DEFAULT_PROTOCOLS
+    items = tuple(p.strip().lower() for p in raw.split(",") if p.strip())
+    return items or DEFAULT_PROTOCOLS
 
 
 def main(
@@ -85,6 +117,11 @@ def main(
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
 
+    is_single_attempt = (not args.scan) and (args.location is not None or args.protocol is not None)
+    if is_single_attempt and (args.location is None or args.protocol is None):
+        print("Error: --location and --protocol must both be provided for a single attempt.", file=err)
+        return 2
+
     try:
         cli_path = resolve_cli_path(args.cli_path)
     except WindscribeNotFoundError as exc:
@@ -94,6 +131,26 @@ def main(
     active_runner = runner if runner is not None else SubprocessCommandRunner()
     active_probe = probe if probe is not None else HttpConnectivityProbe()
     client = WindscribeClient(active_runner, cli_path)
+
+    if not is_single_attempt:
+        protocols = _parse_protocol_list(args.protocols)
+        try:
+            scan_result = run_smart_scan(
+                client,
+                active_probe,
+                protocols=protocols,
+                probe_locations=args.probe_locations,
+                connect_timeout=args.timeout,
+                probe_timeout=args.probe_timeout,
+                probe_samples=args.probe_samples,
+                quick=args.quick,
+                keep_connected=args.keep_connected,
+                output=out,
+            )
+        except (WindscribeNotReadyError, WindscribeError) as exc:
+            print(f"Error: {exc}", file=err)
+            return 2
+        return 0 if scan_result.results else 1
 
     try:
         result = run_single_attempt(

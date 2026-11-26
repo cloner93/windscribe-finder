@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 
 from windscribe_finder.models import (
     CommandResult,
+    WindscribeError,
     WindscribeNotFoundError,
     WindscribeNotReadyError,
 )
@@ -92,6 +94,82 @@ def resolve_cli_path(cli_path: str | Path | None = None) -> str:
     )
 
 
+_DISABLED_RE = re.compile(r"\(\s*disabled\s*\)", re.IGNORECASE)
+_STATUS_TAG_RE = re.compile(r"\(\s*(?:pro|10\s*gbps)\s*\)", re.IGNORECASE)
+_SEPARATOR_RE = re.compile(r"^[\s\-_=]+$")
+_TABLE_SPLIT_RE = re.compile(r"\t+|\s{2,}")
+_PORT_TOKEN_RE = re.compile(r"\b\d{1,5}\b")
+
+
+def parse_ports(output: str) -> list[str]:
+    """Parse valid TCP/UDP port numbers (1-65535) from `windscribe-cli ports <protocol>`."""
+    ports: list[str] = []
+    seen: set[str] = set()
+    for match in _PORT_TOKEN_RE.findall(output):
+        port_num = int(match)
+        if 1 <= port_num <= 65535:
+            port_str = str(port_num)
+            if port_str not in seen:
+                seen.add(port_str)
+                ports.append(port_str)
+    return ports
+
+
+def _strip_location_tags(text: str) -> str:
+    cleaned = _STATUS_TAG_RE.sub("", text)
+    return " ".join(cleaned.split()).strip()
+
+
+def parse_locations(output: str) -> list[str]:
+    """Parse `windscribe-cli locations` output into clean location names.
+
+    Includes `(Pro)` and `(10 Gbps)` entries while stripping those status tags
+    and skipping `(Disabled)` entries.
+    """
+    locations: list[str] = []
+    seen: set[str] = set()
+    section_disabled = False
+    city_column_index: int | None = None
+
+    for raw_line in output.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or _SEPARATOR_RE.match(stripped):
+            continue
+
+        # Detect tabular header lines (e.g. "Location   Short Name   City   Label")
+        columns = _TABLE_SPLIT_RE.split(stripped)
+        lower_cols = [col.strip().lower() for col in columns]
+        if len(columns) >= 2 and lower_cols[0] in {"location", "country", "region"}:
+            if "city" in lower_cols:
+                city_column_index = lower_cols.index("city")
+            else:
+                city_column_index = 0
+            continue
+
+        # Section header ending with ":" (e.g. "Germany:" or "Turkey (Disabled):")
+        if stripped.endswith(":") and not raw_line[:1].isspace():
+            section_disabled = bool(_DISABLED_RE.search(stripped))
+            continue
+
+        # Reset section_disabled when returning to top-level non-indented lines
+        if not raw_line[:1].isspace():
+            section_disabled = False
+
+        if section_disabled or _DISABLED_RE.search(stripped):
+            continue
+
+        if city_column_index is not None and len(columns) > city_column_index:
+            candidate = _strip_location_tags(columns[city_column_index])
+        else:
+            candidate = _strip_location_tags(stripped)
+
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            locations.append(candidate)
+
+    return locations
+
+
 def _combined_output(result: CommandResult) -> str:
     return f"{result.stdout}\n{result.stderr}".strip()
 
@@ -172,6 +250,27 @@ class WindscribeClient:
             return False, combined, False
 
         return True, None, False
+
+    def list_locations(self, *, timeout: float = 10.0) -> list[str]:
+        """Fetch and parse available Windscribe locations from the CLI."""
+        result = self._runner.run([self._cli_path, "locations"], timeout=timeout)
+        if result.timed_out:
+            raise WindscribeError("Timed out fetching Windscribe locations.")
+        _check_not_ready(result)
+        if result.returncode != 0:
+            detail = _combined_output(result) or f"exit code {result.returncode}"
+            raise WindscribeError(f"Failed to fetch Windscribe locations ({detail}).")
+        return parse_locations(result.stdout)
+
+    def list_ports(self, protocol: str, *, timeout: float = 10.0) -> list[str]:
+        """Fetch and parse valid ports for the given protocol from the CLI."""
+        result = self._runner.run([self._cli_path, "ports", protocol], timeout=timeout)
+        if result.timed_out:
+            return []
+        _check_not_ready(result)
+        if result.returncode != 0:
+            return []
+        return parse_ports(result.stdout)
 
     def disconnect(self, *, timeout: float = 10.0) -> CommandResult:
         """Disconnect any active or in-progress Windscribe connection."""
