@@ -24,6 +24,33 @@ DEFAULT_PROTOCOLS: tuple[str, ...] = (
 )
 
 
+def format_duration(seconds: float) -> str:
+    """Format a duration in seconds as a compact human-readable string (e.g. '45s', '4m 30s', '1h 15m')."""
+    total = max(0, int(round(seconds)))
+    if total < 60:
+        return f"{total}s"
+    minutes, rem_seconds = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m {rem_seconds}s" if rem_seconds else f"{minutes}m"
+    hours, rem_minutes = divmod(minutes, 60)
+    return f"{hours}h {rem_minutes}m" if rem_minutes else f"{hours}h"
+
+
+def format_time_estimate(
+    attempt_count: int,
+    connect_timeout: float,
+    *,
+    quick: bool = False,
+) -> str:
+    """Format a worst-case time estimate line based on attempt count and per-attempt timeout."""
+    max_seconds = max(0, attempt_count) * max(0.0, connect_timeout)
+    suffix = "; stops early on first healthy connection" if quick else ""
+    return (
+        f"Estimated max time: up to {format_duration(max_seconds)} "
+        f"({attempt_count} attempt(s) x {connect_timeout:.1f}s timeout{suffix})"
+    )
+
+
 def format_target(location: str, protocol: str, port: str | None) -> str:
     """Format a (location, protocol, port) target label."""
     return f"{location} [{protocol}:{port}]" if port else f"{location} [{protocol}]"
@@ -333,6 +360,10 @@ def run_smart_scan(
                         f"Phase 0: Saved Profile Fast-Path "
                         f"({len(saved_entries)} saved entry/entries for '{isp}' / '{mode}')",
                     )
+                    _emit(
+                        out,
+                        format_time_estimate(len(saved_entries), connect_timeout, quick=quick),
+                    )
                     for idx, entry in enumerate(saved_entries, start=1):
                         stay_connected_now = quick and effective_keep_connected
                         attempt = _execute_and_record(
@@ -388,11 +419,23 @@ def run_smart_scan(
             )
 
             # Phase 1: Protocol & Port Discovery
+            phase1_total = sum(
+                1
+                for pair in candidate_pairs
+                if pair not in working_pairs
+                for location in sample_locations
+                if (location, pair.protocol, pair.port) not in tested_keys
+            )
             _emit(
                 out,
                 f"Phase 1: Protocol & Port Discovery "
                 f"({len(candidate_pairs)} pair(s) x up to {len(sample_locations)} sample location(s))",
             )
+            if phase1_total > 0:
+                _emit(
+                    out,
+                    format_time_estimate(phase1_total, connect_timeout, quick=quick),
+                )
             phase1_index = 0
             for pair in candidate_pairs:
                 if pair in working_pairs:
@@ -407,7 +450,7 @@ def run_smart_scan(
                     stay_connected_now = quick and effective_keep_connected
                     attempt = _execute_and_record(
                         phase_label="Phase 1",
-                        progress_label=str(phase1_index),
+                        progress_label=f"{phase1_index}/{phase1_total}",
                         location=location,
                         protocol=pair.protocol,
                         port=pair.port,
@@ -438,6 +481,11 @@ def run_smart_scan(
                     f"Phase 2: Location Sweep "
                     f"({len(working_pairs)} working pair(s), {len(sweep_jobs)} remaining attempt(s))",
                 )
+                if sweep_jobs:
+                    _emit(
+                        out,
+                        format_time_estimate(len(sweep_jobs), connect_timeout, quick=False),
+                    )
                 for idx, (location, pair) in enumerate(sweep_jobs, start=1):
                     _execute_and_record(
                         phase_label="Phase 2",

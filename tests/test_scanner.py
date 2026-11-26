@@ -846,6 +846,56 @@ class TestCliSmartScan(unittest.TestCase):
             self.assertEqual(exit_code, 1)
             self.assertIn("No working connections found.", out.getvalue())
 
+    def test_scan_prints_estimated_max_time_and_phase1_total_counter(self) -> None:
+        from windscribe_finder.scanner import format_duration, format_time_estimate
+
+        self.assertEqual(format_duration(45), "45s")
+        self.assertEqual(format_duration(90), "1m 30s")
+        self.assertEqual(format_duration(120), "2m")
+        self.assertEqual(format_duration(3660), "1h 1m")
+        self.assertIn(
+            "Estimated max time: up to 1m (4 attempt(s) x 15.0s timeout; stops early on first healthy connection)",
+            format_time_estimate(4, 15.0, quick=True),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cli_path = self._create_dummy_cli(tmpdir)
+            env = FakeVpnEnvironment(
+                locations_output="Germany\nNetherlands\n",
+                ports_by_protocol={"udp": "443, 80\n"},
+                outcomes={},
+            )
+            out = io.StringIO()
+            err = io.StringIO()
+
+            exit_code = main(
+                [
+                    "--cli-path",
+                    cli_path,
+                    "--profile-path",
+                    str(Path(tmpdir) / "profiles.json"),
+                    "--scan",
+                    "--protocols",
+                    "udp",
+                    "--timeout",
+                    "10",
+                    "--quick",
+                ],
+                runner=env,
+                probe=env,
+                stdout=out,
+                stderr=err,
+            )
+
+            self.assertEqual(exit_code, 1)
+            output = out.getvalue()
+            self.assertIn(
+                "Estimated max time: up to 40s (4 attempt(s) x 10.0s timeout; stops early on first healthy connection)",
+                output,
+            )
+            self.assertIn("[Phase 1] [1/4]", output)
+            self.assertIn("[Phase 1] [4/4]", output)
+
 
 if __name__ == "__main__":
     unittest.main()
