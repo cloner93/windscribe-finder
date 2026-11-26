@@ -87,7 +87,7 @@ def run_interactive_menu(
     default_isp: str = DEFAULT_ISP,
     default_mode: str = DEFAULT_MODE,
     default_timeout: float = 15.0,
-    probe_locations: int = 2,
+    probe_locations: int | None = None,
     probe_timeout: float = 5.0,
     probe_samples: int = 3,
     stdin: TextIO | None = None,
@@ -220,7 +220,7 @@ def run_interactive_menu(
                 if not _run_menu_scan(
                     quick=True,
                     discover_only=False,
-                    ask_protocols=False,
+                    ask_protocols=True,
                     ask_timeout=False,
                     ask_keep_connected=False,
                     default_keep_connected=True,

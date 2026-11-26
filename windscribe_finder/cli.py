@@ -91,8 +91,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--probe-locations",
         type=int,
-        default=2,
-        help="Number of sample locations to probe during Phase 1 discovery (default: 2).",
+        default=None,
+        help="Optional max number of locations to probe during Phase 1 (default: all matched servers).",
     )
     parser.add_argument(
         "--quick",

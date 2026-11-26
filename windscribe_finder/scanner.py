@@ -81,21 +81,34 @@ def _location_endpoint_key(location: str) -> str:
 
 def _select_probe_locations(
     locations: Sequence[str],
-    sample_count: int,
+    sample_count: int | None,
     *,
     cover_all_regions: bool = False,
 ) -> list[str]:
-    """Select probe locations preferring distinct countries/regions and distinct server aliases.
+    """Select probe locations, deduplicating server aliases (e.g. Best Location - Alphorn).
 
-    When ``cover_all_regions`` is True (e.g. when the user explicitly supplied a region filter),
-    picks at least one server from every distinct matched region.
+    When ``sample_count`` is ``None`` or ``<= 0``, returns all unique-endpoint locations
+    (all servers of the filtered regions, or all servers of all countries if unfiltered).
+    When ``sample_count`` is positive, prefers distinct countries/regions up to ``sample_count``
+    (or covers all distinct matched regions when ``cover_all_regions`` is True).
     """
     if not locations:
         return []
 
+    if sample_count is None or sample_count <= 0:
+        selected_all: list[str] = []
+        seen_endpoints: set[str] = set()
+        for loc in locations:
+            endpoint_key = _location_endpoint_key(loc)
+            if endpoint_key in seen_endpoints:
+                continue
+            seen_endpoints.add(endpoint_key)
+            selected_all.append(loc)
+        return selected_all
+
     selected: list[str] = []
     seen_regions: set[str] = set()
-    seen_endpoints: set[str] = set()
+    seen_endpoints = set()
     deferred: list[str] = []
 
     for loc in locations:
@@ -225,7 +238,7 @@ def run_smart_scan(
     protocols: Sequence[str] = DEFAULT_PROTOCOLS,
     ports: Sequence[str] | None = None,
     regions: Sequence[str] | None = None,
-    probe_locations: int = 2,
+    probe_locations: int | None = None,
     connect_timeout: float = 15.0,
     probe_timeout: float = 5.0,
     probe_samples: int = 3,

@@ -455,6 +455,92 @@ class TestRegionAndProtocolFiltering(unittest.TestCase):
                 ],
             )
 
+    def test_default_scan_checks_all_servers_of_filtered_country_or_all_countries(self) -> None:
+        locations_text = "\n".join(
+            [
+                "Germany - Frankfurt - Castle (10 Gbps)",
+                "Germany - Berlin - Wall (10 Gbps)",
+                "Germany - Munich - Beer (10 Gbps)",
+                "Netherlands - Amsterdam - Canal (10 Gbps)",
+            ]
+        )
+        # 1) With region filter "Germany" -> checks all 3 Germany servers
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cli_path = _make_dummy_cli(tmpdir)
+            env = FakeVpnEnv(
+                locations_output=locations_text,
+                ports_by_protocol={"udp": "443\n"},
+                outcomes={
+                    ("Castle", "udp", "443"): "timeout",
+                    ("Wall", "udp", "443"): "timeout",
+                    ("Beer", "udp", "443"): "timeout",
+                },
+            )
+            rc = main(
+                [
+                    "--cli-path",
+                    cli_path,
+                    "--profile-path",
+                    str(Path(tmpdir) / "profiles.json"),
+                    "--regions",
+                    "Germany",
+                    "--protocols",
+                    "udp",
+                    "--ports",
+                    "443",
+                    "--discover-only",
+                ],
+                runner=env,
+                probe=env,
+                stdout=io.StringIO(),
+                stderr=io.StringIO(),
+            )
+            self.assertEqual(rc, 1)
+            self.assertEqual(
+                env.connect_calls,
+                [
+                    ("Castle", "udp", "443"),
+                    ("Wall", "udp", "443"),
+                    ("Beer", "udp", "443"),
+                ],
+            )
+
+        # 2) Without region filter -> checks all 4 servers across all countries
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cli_path = _make_dummy_cli(tmpdir)
+            env = FakeVpnEnv(
+                locations_output=locations_text,
+                ports_by_protocol={"udp": "443\n"},
+                outcomes={},
+            )
+            rc = main(
+                [
+                    "--cli-path",
+                    cli_path,
+                    "--profile-path",
+                    str(Path(tmpdir) / "profiles.json"),
+                    "--protocols",
+                    "udp",
+                    "--ports",
+                    "443",
+                    "--discover-only",
+                ],
+                runner=env,
+                probe=env,
+                stdout=io.StringIO(),
+                stderr=io.StringIO(),
+            )
+            self.assertEqual(rc, 1)
+            self.assertEqual(
+                env.connect_calls,
+                [
+                    ("Castle", "udp", "443"),
+                    ("Wall", "udp", "443"),
+                    ("Beer", "udp", "443"),
+                    ("Canal", "udp", "443"),
+                ],
+            )
+
 
 class TestGracefulInterruptHandling(unittest.TestCase):
     def test_ctrl_c_during_phase2_disconnects_saves_winners_and_prints_partial_summary(self) -> None:
@@ -673,8 +759,8 @@ class TestInteractiveMenu(unittest.TestCase):
             )
             out = io.StringIO()
             err = io.StringIO()
-            # Choice 1 (Quick Connect) -> ISP=Irancell, Mode=off, Regions="" -> Choice 6 (Exit)
-            user_input = io.StringIO("1\nIrancell\noff\n\n6\n")
+            # Choice 1 (Quick Connect) -> ISP=Irancell, Mode=off, Regions="", Protocols="", Ports="" -> Choice 6 (Exit)
+            user_input = io.StringIO("1\nIrancell\noff\n\n\n\n6\n")
 
             rc = main(
                 [
