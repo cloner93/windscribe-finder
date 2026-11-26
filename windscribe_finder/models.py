@@ -58,3 +58,21 @@ class AttemptResult:
     avg_latency_ms: float | None = None
     error: str | None = None
     timed_out: bool = False
+
+
+@dataclass(frozen=True)
+class ProtocolPort:
+    """A candidate or working (protocol, port) pair."""
+
+    protocol: str
+    port: str | None = None
+
+
+@dataclass(frozen=True)
+class ScanResult:
+    """Aggregated outcome of a two-phase smart scan."""
+
+    working_pairs: tuple[ProtocolPort, ...]
+    results: tuple[AttemptResult, ...]
+    all_attempts: tuple[AttemptResult, ...] = ()
+    connected_result: AttemptResult | None = None
