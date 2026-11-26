@@ -9,6 +9,7 @@ from typing import TextIO
 from windscribe_finder.attempt import run_single_attempt
 from windscribe_finder.health import DEFAULT_PROBE_URLS
 from windscribe_finder.models import AttemptResult, ProtocolPort, ScanResult
+from windscribe_finder.profiles import DEFAULT_ISP, DEFAULT_MODE, ProfileStore
 from windscribe_finder.seams import ConnectivityProbe
 from windscribe_finder.windscribe import WindscribeClient
 
@@ -116,29 +117,101 @@ def run_smart_scan(
     probe_urls: Sequence[str] = DEFAULT_PROBE_URLS,
     quick: bool = False,
     keep_connected: bool = False,
+    profile_store: ProfileStore | None = None,
+    isp: str = DEFAULT_ISP,
+    mode: str = DEFAULT_MODE,
     output: TextIO | None = None,
 ) -> ScanResult:
-    """Run two-phase smart scan: Phase 1 protocol/port discovery, Phase 2 location sweep."""
+    """Run smart scan: optional Phase 0 fast-path, Phase 1 discovery, Phase 2 location sweep."""
     out = output if output is not None else sys.stdout
     client.check_ready()
-
-    locations = client.list_locations()
-    if not locations:
-        _emit(out, "No available Windscribe locations found.")
-        return ScanResult(working_pairs=(), results=(), all_attempts=(), connected_result=None)
-
-    candidate_pairs = _discover_candidate_pairs(client, protocols)
-    if not candidate_pairs:
-        _emit(out, "No candidate protocol/port pairs available.")
-        return ScanResult(working_pairs=(), results=(), all_attempts=(), connected_result=None)
-
-    sample_count = max(1, min(probe_locations, len(locations)))
-    sample_locations = locations[:sample_count]
 
     working_pairs: list[ProtocolPort] = []
     all_attempts: list[AttemptResult] = []
     tested_keys: set[tuple[str, str, str | None]] = set()
     connected_result: AttemptResult | None = None
+
+    # Phase 0: Saved Profile Fast-Path
+    if profile_store is not None:
+        saved_entries = [
+            entry
+            for entry in profile_store.get_entries(isp, mode)
+            if entry.success_count > 0
+        ]
+        if saved_entries:
+            _emit(
+                out,
+                f"Phase 0: Saved Profile Fast-Path "
+                f"({len(saved_entries)} saved entry/entries for '{isp}' / '{mode}')",
+            )
+            for idx, entry in enumerate(saved_entries, start=1):
+                key = (entry.location, entry.protocol, entry.port)
+                tested_keys.add(key)
+
+                stay_connected_now = quick and keep_connected
+                attempt = run_single_attempt(
+                    client,
+                    probe,
+                    location=entry.location,
+                    protocol=entry.protocol,
+                    port=entry.port,
+                    connect_timeout=connect_timeout,
+                    probe_timeout=probe_timeout,
+                    probe_samples=probe_samples,
+                    probe_urls=probe_urls,
+                    keep_connected=stay_connected_now,
+                    check_ready=False,
+                )
+                all_attempts.append(attempt)
+                profile_store.record_attempt(isp, mode, attempt)
+                _emit(
+                    out,
+                    f"[Phase 0] [{idx}/{len(saved_entries)}] "
+                    f"{_format_target(entry.location, entry.protocol, entry.port)} -> "
+                    f"{_format_attempt_status(attempt)}",
+                )
+
+                if attempt.healthy:
+                    pair = ProtocolPort(protocol=entry.protocol, port=entry.port)
+                    if pair not in working_pairs:
+                        working_pairs.append(pair)
+                    if stay_connected_now:
+                        connected_result = attempt
+                    if quick:
+                        ranked = rank_results(all_attempts)
+                        _emit(out, "")
+                        _emit(out, format_ranked_table(ranked))
+                        return ScanResult(
+                            working_pairs=tuple(working_pairs),
+                            results=ranked,
+                            all_attempts=tuple(all_attempts),
+                            connected_result=connected_result,
+                        )
+
+    locations = client.list_locations()
+    if not locations:
+        _emit(out, "No available Windscribe locations found.")
+        ranked = rank_results(all_attempts)
+        return ScanResult(
+            working_pairs=tuple(working_pairs),
+            results=ranked,
+            all_attempts=tuple(all_attempts),
+            connected_result=connected_result,
+        )
+
+    candidate_pairs = _discover_candidate_pairs(client, protocols)
+    if not candidate_pairs:
+        _emit(out, "No candidate protocol/port pairs available.")
+        ranked = rank_results(all_attempts)
+        return ScanResult(
+            working_pairs=tuple(working_pairs),
+            results=ranked,
+            all_attempts=tuple(all_attempts),
+            connected_result=connected_result,
+        )
+
+    sample_count = max(1, min(probe_locations, len(locations)))
+    sample_locations = locations[:sample_count]
 
     # Phase 1: Protocol & Port Discovery
     _emit(
@@ -148,10 +221,14 @@ def run_smart_scan(
     )
     phase1_index = 0
     for pair in candidate_pairs:
+        if pair in working_pairs:
+            continue
         pair_worked = False
         for location in sample_locations:
-            phase1_index += 1
             key = (location, pair.protocol, pair.port)
+            if key in tested_keys:
+                continue
+            phase1_index += 1
             tested_keys.add(key)
 
             stay_connected_now = quick and keep_connected
@@ -169,6 +246,8 @@ def run_smart_scan(
                 check_ready=False,
             )
             all_attempts.append(attempt)
+            if profile_store is not None:
+                profile_store.record_attempt(isp, mode, attempt)
             _emit(
                 out,
                 f"[Phase 1] [{phase1_index}] "
@@ -224,6 +303,8 @@ def run_smart_scan(
                 check_ready=False,
             )
             all_attempts.append(attempt)
+            if profile_store is not None:
+                profile_store.record_attempt(isp, mode, attempt)
             _emit(
                 out,
                 f"[Phase 2] [{idx}/{len(sweep_jobs)}] "

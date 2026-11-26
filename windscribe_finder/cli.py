@@ -9,6 +9,7 @@ from typing import TextIO
 
 from windscribe_finder.attempt import run_single_attempt
 from windscribe_finder.models import WindscribeError, WindscribeNotFoundError, WindscribeNotReadyError
+from windscribe_finder.profiles import DEFAULT_ISP, DEFAULT_MODE, ProfileStore
 from windscribe_finder.scanner import DEFAULT_PROTOCOLS, run_smart_scan
 from windscribe_finder.seams import (
     CommandRunner,
@@ -93,6 +94,29 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Stay connected to the verified (or top-ranked) healthy server.",
     )
+    parser.add_argument(
+        "--isp",
+        default=DEFAULT_ISP,
+        help=f"ISP profile label for saving/loading working combinations (default: {DEFAULT_ISP}).",
+    )
+    parser.add_argument(
+        "--mode",
+        default=DEFAULT_MODE,
+        help=(
+            "Anti-censorship mode tag for saving/loading working combinations "
+            f"(e.g. off, amneziawg-1; default: {DEFAULT_MODE})."
+        ),
+    )
+    parser.add_argument(
+        "--profile-path",
+        default=None,
+        help="Optional path to the JSON profile store file.",
+    )
+    parser.add_argument(
+        "--list-amneziawg",
+        action="store_true",
+        help="Display available AmneziaWG presets reported by Windscribe CLI and exit.",
+    )
     return parser
 
 
@@ -132,8 +156,24 @@ def main(
     active_probe = probe if probe is not None else HttpConnectivityProbe()
     client = WindscribeClient(active_runner, cli_path)
 
+    if args.list_amneziawg:
+        try:
+            client.check_ready()
+            presets = client.list_amneziawg_presets()
+        except (WindscribeNotReadyError, WindscribeError) as exc:
+            print(f"Error: {exc}", file=err)
+            return 2
+        if not presets:
+            print("No AmneziaWG presets reported by Windscribe CLI.", file=out)
+        else:
+            print("Available AmneziaWG presets:", file=out)
+            for preset in presets:
+                print(f"  - {preset}", file=out)
+        return 0
+
     if not is_single_attempt:
         protocols = _parse_protocol_list(args.protocols)
+        profile_store = ProfileStore(args.profile_path)
         try:
             scan_result = run_smart_scan(
                 client,
@@ -145,6 +185,9 @@ def main(
                 probe_samples=args.probe_samples,
                 quick=args.quick,
                 keep_connected=args.keep_connected,
+                profile_store=profile_store,
+                isp=args.isp,
+                mode=args.mode,
                 output=out,
             )
         except (WindscribeNotReadyError, WindscribeError) as exc:

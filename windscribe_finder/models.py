@@ -69,6 +69,19 @@ class ProtocolPort:
 
 
 @dataclass(frozen=True)
+class ProfileEntry:
+    """A saved (location, protocol, port) entry with reliability and latency stats."""
+
+    location: str
+    protocol: str
+    port: str | None
+    success_count: int = 0
+    failure_count: int = 0
+    last_latency_ms: float | None = None
+    last_verified_at: str | None = None
+
+
+@dataclass(frozen=True)
 class ScanResult:
     """Aggregated outcome of a two-phase smart scan."""
 

@@ -99,6 +99,27 @@ _STATUS_TAG_RE = re.compile(r"\(\s*(?:pro|10\s*gbps)\s*\)", re.IGNORECASE)
 _SEPARATOR_RE = re.compile(r"^[\s\-_=]+$")
 _TABLE_SPLIT_RE = re.compile(r"\t+|\s{2,}")
 _PORT_TOKEN_RE = re.compile(r"\b\d{1,5}\b")
+_BULLET_PREFIX_RE = re.compile(r"^(?:[-*•]+|\d+[.)])\s+")
+
+
+def parse_amneziawg_presets(output: str) -> list[str]:
+    """Parse available AmneziaWG preset names from `windscribe-cli amneziawg`."""
+    presets: list[str] = []
+    seen: set[str] = set()
+    for raw_line in output.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or _SEPARATOR_RE.match(stripped):
+            continue
+        lower = stripped.lower()
+        if stripped.endswith(":") and ("preset" in lower or "amneziawg" in lower):
+            continue
+        if lower in {"none", "no presets available", "no amneziawg presets available"}:
+            continue
+        cleaned = _BULLET_PREFIX_RE.sub("", stripped).strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            presets.append(cleaned)
+    return presets
 
 
 def parse_ports(output: str) -> list[str]:
@@ -271,6 +292,17 @@ class WindscribeClient:
         if result.returncode != 0:
             return []
         return parse_ports(result.stdout)
+
+    def list_amneziawg_presets(self, *, timeout: float = 10.0) -> list[str]:
+        """Fetch and parse available AmneziaWG presets from the CLI."""
+        result = self._runner.run([self._cli_path, "amneziawg"], timeout=timeout)
+        if result.timed_out:
+            raise WindscribeError("Timed out fetching AmneziaWG presets.")
+        _check_not_ready(result)
+        if result.returncode != 0:
+            detail = _combined_output(result) or f"exit code {result.returncode}"
+            raise WindscribeError(f"Failed to fetch AmneziaWG presets ({detail}).")
+        return parse_amneziawg_presets(result.stdout)
 
     def disconnect(self, *, timeout: float = 10.0) -> CommandResult:
         """Disconnect any active or in-progress Windscribe connection."""

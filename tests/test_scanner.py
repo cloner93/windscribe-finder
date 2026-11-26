@@ -437,6 +437,8 @@ class TestCliSmartScan(unittest.TestCase):
                 [
                     "--cli-path",
                     cli_path,
+                    "--profile-path",
+                    str(Path(tmpdir) / "profiles.json"),
                     "--scan",
                     "--protocols",
                     "wireguard,stealth",
@@ -493,6 +495,8 @@ class TestCliSmartScan(unittest.TestCase):
                 [
                     "--cli-path",
                     cli_path,
+                    "--profile-path",
+                    str(Path(tmpdir) / "profiles.json"),
                     "--scan",
                     "--protocols",
                     "wireguard",
@@ -526,6 +530,8 @@ class TestCliSmartScan(unittest.TestCase):
                 [
                     "--cli-path",
                     cli_path,
+                    "--profile-path",
+                    str(Path(tmpdir) / "profiles.json"),
                     "--scan",
                     "--protocols",
                     "wireguard",
