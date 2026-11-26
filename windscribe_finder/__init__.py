@@ -1,6 +1,7 @@
 """Windscribe Connection Finder package."""
 
 from windscribe_finder.attempt import run_single_attempt
+from windscribe_finder.menu import run_interactive_menu
 from windscribe_finder.models import (
     AttemptResult,
     CommandResult,
@@ -18,10 +19,12 @@ from windscribe_finder.profiles import (
     DEFAULT_MODE,
     ProfileStore,
     default_profile_path,
+    format_saved_profiles,
     rank_profile_entries,
 )
 from windscribe_finder.scanner import (
     DEFAULT_PROTOCOLS,
+    filter_locations,
     format_ranked_table,
     rank_results,
     run_smart_scan,
@@ -61,13 +64,16 @@ __all__ = [
     "WindscribeNotFoundError",
     "WindscribeNotReadyError",
     "default_profile_path",
+    "filter_locations",
     "format_ranked_table",
+    "format_saved_profiles",
     "parse_amneziawg_presets",
     "parse_locations",
     "parse_ports",
     "rank_profile_entries",
     "rank_results",
     "resolve_cli_path",
+    "run_interactive_menu",
     "run_single_attempt",
     "run_smart_scan",
 ]

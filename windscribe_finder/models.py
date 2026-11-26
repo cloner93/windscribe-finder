@@ -89,3 +89,4 @@ class ScanResult:
     results: tuple[AttemptResult, ...]
     all_attempts: tuple[AttemptResult, ...] = ()
     connected_result: AttemptResult | None = None
+    interrupted: bool = False

@@ -8,8 +8,9 @@ from collections.abc import Sequence
 from typing import TextIO
 
 from windscribe_finder.attempt import run_single_attempt
+from windscribe_finder.menu import run_interactive_menu
 from windscribe_finder.models import WindscribeError, WindscribeNotFoundError, WindscribeNotReadyError
-from windscribe_finder.profiles import DEFAULT_ISP, DEFAULT_MODE, ProfileStore
+from windscribe_finder.profiles import DEFAULT_ISP, DEFAULT_MODE, ProfileStore, format_saved_profiles
 from windscribe_finder.scanner import DEFAULT_PROTOCOLS, run_smart_scan
 from windscribe_finder.seams import (
     CommandRunner,
@@ -24,6 +25,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="windscribe_finder",
         description="Test and discover working Windscribe VPN connections.",
+    )
+    parser.add_argument(
+        "--interactive",
+        "-i",
+        action="store_true",
+        help="Launch the interactive text menu (also default when run with no arguments).",
     )
     parser.add_argument(
         "--scan",
@@ -46,6 +53,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--port",
         default=None,
         help="Optional port number for a single attempt.",
+    )
+    parser.add_argument(
+        "--discover-only",
+        action="store_true",
+        help="Run Phase 1 protocol/port discovery only and skip the Phase 2 location sweep.",
+    )
+    parser.add_argument(
+        "--regions",
+        default=None,
+        help="Comma-separated region/location filter (case-insensitive, e.g. 'Germany,Netherlands').",
     )
     parser.add_argument(
         "--protocols",
@@ -117,7 +134,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Display available AmneziaWG presets reported by Windscribe CLI and exit.",
     )
+    parser.add_argument(
+        "--show-profiles",
+        action="store_true",
+        help="Display saved ISP and anti-censorship profiles and exit.",
+    )
     return parser
+
+
+def _parse_region_list(raw: str | None) -> tuple[str, ...]:
+    if not raw:
+        return ()
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
 
 
 def _parse_protocol_list(raw: str | None) -> tuple[str, ...]:
@@ -132,16 +160,48 @@ def main(
     *,
     runner: CommandRunner | None = None,
     probe: ConnectivityProbe | None = None,
+    stdin: TextIO | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
+    inp = stdin if stdin is not None else sys.stdin
     out = stdout if stdout is not None else sys.stdout
     err = stderr if stderr is not None else sys.stderr
 
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
     parser = build_parser()
-    args = parser.parse_args(list(argv) if argv is not None else None)
+    args = parser.parse_args(raw_argv)
 
-    is_single_attempt = (not args.scan) and (args.location is not None or args.protocol is not None)
+    if len(raw_argv) == 0 or args.interactive:
+        active_runner = runner if runner is not None else SubprocessCommandRunner()
+        active_probe = probe if probe is not None else HttpConnectivityProbe()
+        profile_store = ProfileStore(args.profile_path)
+        return run_interactive_menu(
+            runner=active_runner,
+            probe=active_probe,
+            profile_store=profile_store,
+            cli_path_override=args.cli_path,
+            default_isp=args.isp,
+            default_mode=args.mode,
+            default_timeout=args.timeout,
+            probe_locations=args.probe_locations,
+            probe_timeout=args.probe_timeout,
+            probe_samples=args.probe_samples,
+            stdin=inp,
+            stdout=out,
+            stderr=err,
+        )
+
+    if args.show_profiles:
+        profile_store = ProfileStore(args.profile_path)
+        print(format_saved_profiles(profile_store), file=out)
+        return 0
+
+    is_single_attempt = (
+        (not args.scan)
+        and (not args.discover_only)
+        and (args.location is not None or args.protocol is not None)
+    )
     if is_single_attempt and (args.location is None or args.protocol is None):
         print("Error: --location and --protocol must both be provided for a single attempt.", file=err)
         return 2
@@ -173,18 +233,21 @@ def main(
 
     if not is_single_attempt:
         protocols = _parse_protocol_list(args.protocols)
+        regions = _parse_region_list(args.regions)
         profile_store = ProfileStore(args.profile_path)
         try:
             scan_result = run_smart_scan(
                 client,
                 active_probe,
                 protocols=protocols,
+                regions=regions or None,
                 probe_locations=args.probe_locations,
                 connect_timeout=args.timeout,
                 probe_timeout=args.probe_timeout,
                 probe_samples=args.probe_samples,
                 quick=args.quick,
                 keep_connected=args.keep_connected,
+                discover_only=args.discover_only,
                 profile_store=profile_store,
                 isp=args.isp,
                 mode=args.mode,
@@ -193,6 +256,8 @@ def main(
         except (WindscribeNotReadyError, WindscribeError) as exc:
             print(f"Error: {exc}", file=err)
             return 2
+        if scan_result.interrupted:
+            return 130
         return 0 if scan_result.results else 1
 
     try:

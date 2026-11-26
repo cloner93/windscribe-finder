@@ -257,3 +257,29 @@ class ProfileStore:
         entries_map[key] = updated
         self._save()
         return updated
+
+
+def format_saved_profiles(store: ProfileStore) -> str:
+    """Format all saved ISP/mode profiles and their entries as readable text."""
+    keys = store.list_profiles()
+    if not keys:
+        return "No saved profiles found."
+
+    sections: list[str] = []
+    for isp, mode in keys:
+        entries = store.get_entries(isp, mode)
+        header = f"Profile: ISP='{isp}' | Mode='{mode}' ({len(entries)} entry/entries)"
+        if not entries:
+            sections.append(f"{header}\n  (no entries)")
+            continue
+        lines = [header]
+        for idx, entry in enumerate(entries, start=1):
+            port_part = f":{entry.port}" if entry.port else ""
+            latency_part = f"{entry.last_latency_ms:.1f} ms" if entry.last_latency_ms is not None else "-"
+            verified_part = entry.last_verified_at or "-"
+            lines.append(
+                f"  {idx}. {entry.location} [{entry.protocol}{port_part}] "
+                f"- {latency_part} (ok={entry.success_count}, fail={entry.failure_count}, last={verified_part})"
+            )
+        sections.append("\n".join(lines))
+    return "\n\n".join(sections)
